@@ -5,8 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-import voluptuous as vol
-
 from homeassistant.config_entries import (
     ConfigEntry,
     ConfigFlow,
@@ -25,6 +23,7 @@ from homeassistant.helpers.selector import (
     TextSelector,
     TimeSelector,
 )
+import voluptuous as vol
 
 from .const import (
     CONF_CAMERA_ENTITY,
@@ -75,7 +74,9 @@ def _options_schema() -> vol.Schema:
             vol.Required(
                 CONF_FILENAME_PATTERN, default=DEFAULT_FILENAME_PATTERN
             ): TextSelector(),
-            vol.Required(CONF_KEEP_FRAMES, default=DEFAULT_KEEP_FRAMES): BooleanSelector(),
+            vol.Required(
+                CONF_KEEP_FRAMES, default=DEFAULT_KEEP_FRAMES
+            ): BooleanSelector(),
             vol.Required(CONF_SCHEDULE_ENABLED, default=False): BooleanSelector(),
             vol.Optional(CONF_SCHEDULE_START): TimeSelector(),
             vol.Optional(CONF_SCHEDULE_END): TimeSelector(),

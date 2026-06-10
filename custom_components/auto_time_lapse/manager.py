@@ -188,7 +188,9 @@ class TimelapseManager:
                     await self.async_start()
 
             self._unsubs.append(
-                self.hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, _on_started)
+                self.hass.bus.async_listen_once(
+                    EVENT_HOMEASSISTANT_STARTED, _on_started
+                )
             )
 
     @staticmethod
@@ -216,7 +218,7 @@ class TimelapseManager:
         removed = await self.hass.async_add_executor_job(_cleanup)
         if removed:
             _LOGGER.info(
-                "Removed %d stale frame session(s) for %s left over from a previous run",
+                "Removed %d stale frame session(s) for %s from a previous run",
                 removed,
                 self.entry.title,
             )
@@ -294,7 +296,9 @@ class TimelapseManager:
         self._session_dir = None
         self.session_started_at = None
         _LOGGER.info(
-            "Stopped timelapse capture for %s with %d frame(s)", self.entry.title, frames
+            "Stopped timelapse capture for %s with %d frame(s)",
+            self.entry.title,
+            frames,
         )
         if session_dir is not None:
             if render and frames > 0:
@@ -398,7 +402,7 @@ class TimelapseManager:
                 )
             except (RenderError, HomeAssistantError) as err:
                 _LOGGER.error(
-                    "Timelapse render failed for %s; frames kept at %s for re-rendering: %s",
+                    "Timelapse render failed for %s; frames kept at %s: %s",
                     self.entry.title,
                     session_dir,
                     err,
@@ -416,7 +420,9 @@ class TimelapseManager:
                         "frame_count": frames,
                     },
                 )
-                _LOGGER.info("Timelapse for %s saved to %s", self.entry.title, output_path)
+                _LOGGER.info(
+                    "Timelapse for %s saved to %s", self.entry.title, output_path
+                )
                 if self.keep_frames:
                     self._last_session_dir = session_dir
                     self._last_session_frames = frames
