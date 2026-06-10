@@ -10,6 +10,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.auto_time_lapse.const import (
     CONF_CAMERA_ENTITY,
+    CONF_CAPTURE_MODE,
     CONF_FILENAME_PATTERN,
     CONF_INTERVAL,
     CONF_KEEP_FRAMES,
@@ -17,6 +18,7 @@ from custom_components.auto_time_lapse.const import (
     CONF_TRIGGER_MODE,
     DOMAIN,
     SUBENTRY_TYPE_TRIGGER,
+    CaptureMode,
     TriggerMode,
 )
 
@@ -41,6 +43,7 @@ def base_trigger_data() -> dict:
     """Minimal valid data for a manual trigger subentry."""
     return {
         CONF_TRIGGER_MODE: TriggerMode.MANUAL.value,
+        CONF_CAPTURE_MODE: CaptureMode.TIME.value,
         CONF_INTERVAL: 60,
         CONF_OUTPUT_FPS: 30,
         CONF_FILENAME_PATTERN: "{name}_{timestamp}.mp4",

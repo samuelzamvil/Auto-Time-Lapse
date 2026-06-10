@@ -19,7 +19,11 @@ from pytest_homeassistant_custom_component.common import (
 
 from custom_components.auto_time_lapse.const import (
     ATTR_DEVICE_ID,
+    CONF_CAPTURE_MODE,
     CONF_TRIGGER_MODE,
+    CONF_VALUE_DELTA,
+    CONF_VALUE_DIRECTION,
+    CONF_VALUE_ENTITY,
     CONF_WATCH_ENTITY,
     CONF_WATCH_STATES,
     DOMAIN,
@@ -27,8 +31,10 @@ from custom_components.auto_time_lapse.const import (
     SERVICE_CANCEL,
     SERVICE_START,
     SERVICE_STOP,
+    CaptureMode,
     SessionState,
     TriggerMode,
+    ValueDirection,
 )
 
 from .conftest import TEST_SUBENTRY_ID, make_entry
@@ -237,6 +243,86 @@ async def test_watch_already_active_at_setup(
     hass.states.async_set("input_boolean.motion", STATE_ON)
     await setup_integration(hass, entry)
     assert get_manager(entry).state is SessionState.CAPTURING
+
+
+async def test_value_change_cadence(
+    hass, base_trigger_data, mock_camera_image, mock_render
+):
+    """Frames follow a numeric entity (e.g. one frame per printer layer)."""
+    entry = make_entry(
+        base_trigger_data
+        | {
+            CONF_CAPTURE_MODE: CaptureMode.VALUE_CHANGE.value,
+            CONF_VALUE_ENTITY: "sensor.current_layer",
+            CONF_VALUE_DELTA: 1.0,
+            CONF_VALUE_DIRECTION: ValueDirection.ANY.value,
+        },
+        title="Layer Lapse",
+    )
+    hass.states.async_set("sensor.current_layer", "0")
+    await setup_integration(hass, entry)
+    manager = get_manager(entry)
+    device_id = get_device_id(hass)
+
+    await hass.services.async_call(
+        DOMAIN, SERVICE_START, {ATTR_DEVICE_ID: device_id}, blocking=True
+    )
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert manager.frame_count == 1  # immediate first frame
+
+    hass.states.async_set("sensor.current_layer", "1")
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert manager.frame_count == 2
+
+    # Below the step: no frame.
+    hass.states.async_set("sensor.current_layer", "1.5")
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert manager.frame_count == 2
+
+    hass.states.async_set("sensor.current_layer", "2")
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert manager.frame_count == 3
+
+    # Non-numeric values are ignored.
+    hass.states.async_set("sensor.current_layer", "unavailable")
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert manager.frame_count == 3
+    assert manager.state is SessionState.CAPTURING
+
+
+async def test_value_change_increase_rebaselines_on_reset(
+    hass, base_trigger_data, mock_camera_image, mock_render
+):
+    """With direction=increase, a counter reset re-baselines silently."""
+    entry = make_entry(
+        base_trigger_data
+        | {
+            CONF_CAPTURE_MODE: CaptureMode.VALUE_CHANGE.value,
+            CONF_VALUE_ENTITY: "sensor.current_layer",
+            CONF_VALUE_DELTA: 1.0,
+            CONF_VALUE_DIRECTION: ValueDirection.INCREASE.value,
+        },
+        title="Layer Lapse",
+    )
+    hass.states.async_set("sensor.current_layer", "300")
+    await setup_integration(hass, entry)
+    manager = get_manager(entry)
+    device_id = get_device_id(hass)
+
+    await hass.services.async_call(
+        DOMAIN, SERVICE_START, {ATTR_DEVICE_ID: device_id}, blocking=True
+    )
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert manager.frame_count == 1
+
+    # Counter resets for a new print: no frame, but baseline follows down.
+    hass.states.async_set("sensor.current_layer", "0")
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert manager.frame_count == 1
+
+    hass.states.async_set("sensor.current_layer", "1")
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert manager.frame_count == 2
 
 
 async def test_switch_reflects_and_controls_capture(
