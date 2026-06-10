@@ -11,6 +11,8 @@ from homeassistant.data_entry_flow import FlowResultType
 from custom_components.auto_time_lapse.const import (
     CONF_CAMERA_ENTITY,
     CONF_CAPTURE_MODE,
+    CONF_DURATION_ENTITY,
+    CONF_FALLBACK_INTERVAL,
     CONF_FILENAME_PATTERN,
     CONF_INTERVAL,
     CONF_KEEP_FRAMES,
@@ -18,6 +20,7 @@ from custom_components.auto_time_lapse.const import (
     CONF_OUTPUT_FPS,
     CONF_SCHEDULE_END,
     CONF_SCHEDULE_START,
+    CONF_TARGET_LENGTH,
     CONF_TRIGGER_MODE,
     CONF_VALUE_DELTA,
     CONF_VALUE_DIRECTION,
@@ -232,6 +235,47 @@ async def test_trigger_subentry_value_change(hass, mock_entry):
     assert subentry.data[CONF_VALUE_DELTA] == 1
     assert subentry.data[CONF_VALUE_DIRECTION] == ValueDirection.INCREASE.value
     assert CONF_INTERVAL not in subentry.data
+
+
+async def test_trigger_subentry_fit_length(hass, mock_entry):
+    """The fit-length cadence asks for a duration entity, target, and fallback."""
+    await _setup_loaded_entry(hass, mock_entry)
+    result = await _start_trigger_flow(hass, mock_entry)
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        dict(TRIGGER_INPUT) | {CONF_CAPTURE_MODE: CaptureMode.TIME_FIT.value},
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "fit_length"
+
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        {
+            CONF_DURATION_ENTITY: "sensor.print_duration",
+            CONF_TARGET_LENGTH: 0,
+            CONF_FALLBACK_INTERVAL: 30,
+        },
+    )
+    assert result["errors"] == {CONF_TARGET_LENGTH: "length_positive"}
+
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        {
+            CONF_DURATION_ENTITY: "sensor.print_duration",
+            CONF_TARGET_LENGTH: 10,
+            CONF_FALLBACK_INTERVAL: 30,
+        },
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    subentry = next(
+        s for s in mock_entry.subentries.values() if s.title == "Garden"
+    )
+    assert subentry.data[CONF_CAPTURE_MODE] == CaptureMode.TIME_FIT.value
+    assert subentry.data[CONF_DURATION_ENTITY] == "sensor.print_duration"
+    assert subentry.data[CONF_TARGET_LENGTH] == 10
+    assert subentry.data[CONF_FALLBACK_INTERVAL] == 30
+    assert CONF_INTERVAL not in subentry.data
+    assert CONF_VALUE_ENTITY not in subentry.data
 
 
 async def test_trigger_subentry_reconfigure(hass, mock_entry):

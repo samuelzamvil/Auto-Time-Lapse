@@ -33,6 +33,8 @@ from homeassistant.util import dt as dt_util, slugify
 from .const import (
     CONF_CAMERA_ENTITY,
     CONF_CAPTURE_MODE,
+    CONF_DURATION_ENTITY,
+    CONF_FALLBACK_INTERVAL,
     CONF_FILENAME_PATTERN,
     CONF_INTERVAL,
     CONF_KEEP_FRAMES,
@@ -40,16 +42,19 @@ from .const import (
     CONF_OUTPUT_FPS,
     CONF_SCHEDULE_END,
     CONF_SCHEDULE_START,
+    CONF_TARGET_LENGTH,
     CONF_TRIGGER_MODE,
     CONF_VALUE_DELTA,
     CONF_VALUE_DIRECTION,
     CONF_VALUE_ENTITY,
     CONF_WATCH_ENTITY,
     CONF_WATCH_STATES,
+    DEFAULT_FALLBACK_INTERVAL,
     DEFAULT_FILENAME_PATTERN,
     DEFAULT_INTERVAL,
     DEFAULT_KEEP_FRAMES,
     DEFAULT_OUTPUT_FPS,
+    DEFAULT_TARGET_LENGTH,
     DEFAULT_VALUE_DELTA,
     DOMAIN,
     EVENT_TIMELAPSE_FINISHED,
@@ -144,6 +149,20 @@ class TimelapseManager:
     @property
     def interval(self) -> int:
         return int(self._options.get(CONF_INTERVAL, DEFAULT_INTERVAL))
+
+    @property
+    def duration_entity(self) -> str | None:
+        return self._options.get(CONF_DURATION_ENTITY)
+
+    @property
+    def target_length(self) -> float:
+        return float(self._options.get(CONF_TARGET_LENGTH, DEFAULT_TARGET_LENGTH))
+
+    @property
+    def fallback_interval(self) -> int:
+        return int(
+            self._options.get(CONF_FALLBACK_INTERVAL, DEFAULT_FALLBACK_INTERVAL)
+        )
 
     @property
     def capture_mode(self) -> CaptureMode:
@@ -503,14 +522,17 @@ class TimelapseManager:
                 self.value_direction.value,
             )
         else:
+            # The interval is computed once here and stays frozen for the
+            # whole session: the listener is only torn down at stop/cancel.
+            seconds = self._capture_interval_seconds()
             self._unsub_capture = async_track_time_interval(
-                self.hass, self._async_capture_frame, timedelta(seconds=self.interval)
+                self.hass, self._async_capture_frame, timedelta(seconds=seconds)
             )
             _LOGGER.info(
-                "Started timelapse capture for %s (camera %s, every %d s)",
+                "Started timelapse capture for %s (camera %s, every %.1f s)",
                 self.title,
                 self.camera_entity,
-                self.interval,
+                seconds,
             )
         self._notify()
         await self._async_capture_frame()
@@ -627,17 +649,47 @@ class TimelapseManager:
             self._unsub_capture = None
         self._value_baseline = None
 
-    def _current_value(self) -> float | None:
-        """Return the watched value entity's state as a float, if numeric."""
-        if not self.value_entity:
+    def _capture_interval_seconds(self) -> float:
+        """Return the seconds between snapshots for this session."""
+        if self.capture_mode is not CaptureMode.TIME_FIT:
+            return float(self.interval)
+        duration = self._read_float(self.duration_entity)
+        if duration is None or duration <= 0:
+            _LOGGER.warning(
+                "%s: duration entity %s is not a positive number; "
+                "falling back to %d s between snapshots",
+                self.title,
+                self.duration_entity,
+                self.fallback_interval,
+            )
+            return float(self.fallback_interval)
+        seconds = duration / (self.output_fps * self.target_length)
+        if seconds < 1.0:
+            _LOGGER.debug(
+                "%s: computed interval %.3f s clamped to 1 s; the video "
+                "will be shorter than the %.1f s target",
+                self.title,
+                seconds,
+                self.target_length,
+            )
+            return 1.0
+        return seconds
+
+    def _read_float(self, entity_id: str | None) -> float | None:
+        """Return an entity's state as a float, if numeric."""
+        if not entity_id:
             return None
-        state = self.hass.states.get(self.value_entity)
+        state = self.hass.states.get(entity_id)
         if state is None:
             return None
         try:
             return float(state.state)
         except (TypeError, ValueError):
             return None
+
+    def _current_value(self) -> float | None:
+        """Return the watched value entity's state as a float, if numeric."""
+        return self._read_float(self.value_entity)
 
     @callback
     def _async_on_value_change(self, event: Event[EventStateChangedData]) -> None:
