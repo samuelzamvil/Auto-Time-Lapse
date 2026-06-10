@@ -35,11 +35,11 @@
             "keep_frames": "Keep frames after rendering"
           },
           "data_description": {
-            "name": "Used for the device name and the '{name}' filename placeholder.",
+            "name": "Used for the device name and as the name placeholder in filenames.",
             "trigger_mode": "Manual: start and stop with the switch or services. Daily time window: capture between two times every day. Entity state watch: capture while another entity is in chosen states.",
             "interval": "Seconds between snapshots while capturing.",
             "output_dir": "Folder for finished videos, created automatically if it does not exist (for example /media/timelapses). Leave empty for the default media folder. Anything under /media shows up in the Media Browser, including NAS shares added via Settings > System > Storage. Paths outside a media folder must be listed in allowlist_external_dirs.",
-            "filename_pattern": "Supports '{name}', '{timestamp}' and '{entry_id}' placeholders.",
+            "filename_pattern": "Pattern for the video filename. Wrap the placeholders name, timestamp or entry_id in curly braces to insert them, as in the default value.",
             "keep_frames": "Keep the individual snapshot frames on disk after the video is rendered."
           }
         },
@@ -55,11 +55,11 @@
             "keep_frames": "Keep frames after rendering"
           },
           "data_description": {
-            "name": "Used for the device name and the '{name}' filename placeholder.",
+            "name": "Used for the device name and as the name placeholder in filenames.",
             "trigger_mode": "Manual: start and stop with the switch or services. Daily time window: capture between two times every day. Entity state watch: capture while another entity is in chosen states.",
             "interval": "Seconds between snapshots while capturing.",
             "output_dir": "Folder for finished videos, created automatically if it does not exist (for example /media/timelapses). Leave empty for the default media folder. Anything under /media shows up in the Media Browser, including NAS shares added via Settings > System > Storage. Paths outside a media folder must be listed in allowlist_external_dirs.",
-            "filename_pattern": "Supports '{name}', '{timestamp}' and '{entry_id}' placeholders.",
+            "filename_pattern": "Pattern for the video filename. Wrap the placeholders name, timestamp or entry_id in curly braces to insert them, as in the default value.",
             "keep_frames": "Keep the individual snapshot frames on disk after the video is rendered."
           }
         },
