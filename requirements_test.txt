@@ -1,2 +1,4 @@
 pytest-homeassistant-custom-component
+ha-ffmpeg
+PyTurboJPEG
 ruff
