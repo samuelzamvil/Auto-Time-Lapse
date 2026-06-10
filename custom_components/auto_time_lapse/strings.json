@@ -17,11 +17,11 @@
           "watch_entity": "Watch entity"
         },
         "data_description": {
-          "name": "Used for the device name and the {name} filename placeholder.",
+          "name": "Used for the device name and the '{name}' filename placeholder.",
           "camera_entity": "Camera to capture snapshots from.",
           "interval": "Seconds between snapshots while capturing.",
           "output_dir": "Where finished videos are saved. Leave empty to use the media folder (visible in the Media Browser, including NAS network storage mounts). Custom paths must be in allowlist_external_dirs or a media dir.",
-          "filename_pattern": "Supports {name}, {timestamp} and {entry_id} placeholders.",
+          "filename_pattern": "Supports '{name}', '{timestamp}' and '{entry_id}' placeholders.",
           "keep_frames": "Keep the individual snapshot frames on disk after the video is rendered.",
           "schedule_enabled": "Capture every day between the start and end times; the video is rendered when the window ends. Overnight windows (e.g. 22:00 to 06:00) are supported.",
           "watch_entity": "Optional entity to watch: capture starts when it turns on and stops (and renders) when it turns off."
@@ -57,7 +57,7 @@
           "camera_entity": "Camera to capture snapshots from.",
           "interval": "Seconds between snapshots while capturing.",
           "output_dir": "Where finished videos are saved. Leave empty to use the media folder (visible in the Media Browser, including NAS network storage mounts). Custom paths must be in allowlist_external_dirs or a media dir.",
-          "filename_pattern": "Supports {name}, {timestamp} and {entry_id} placeholders.",
+          "filename_pattern": "Supports '{name}', '{timestamp}' and '{entry_id}' placeholders.",
           "keep_frames": "Keep the individual snapshot frames on disk after the video is rendered.",
           "schedule_enabled": "Capture every day between the start and end times; the video is rendered when the window ends. Overnight windows (e.g. 22:00 to 06:00) are supported.",
           "watch_entity": "Optional entity to watch: capture starts when it turns on and stops (and renders) when it turns off."
