@@ -2,11 +2,15 @@
 
 A [Home Assistant](https://www.home-assistant.io/) custom integration that turns any camera entity into a timelapse factory: it captures snapshots on an interval while a session is active, then stitches them into an H.264 MP4 with ffmpeg when the session ends.
 
-- **Any camera entity** as the source.
-- **Four ways to trigger a session:** services (use any HA automation), a built-in daily schedule (overnight windows supported), a watch entity (start on `on`, stop+render on `off`), and a per-profile capture switch.
-- **Videos land in your media folder by default**, so they're playable right away in HA's Media Browser — including NAS network storage you've mounted via *Settings → System → Storage* (it appears under `/media`). Custom output paths are supported and validated against HA's allowed paths.
-- **Multiple independent profiles** — add the integration once per camera/use-case.
-- Frames are cleaned up after a successful render (configurable), and kept for re-rendering if ffmpeg fails.
+- **One entry per camera, any number of triggers.** Add a camera once, then add independent trigger profiles to it — each with its own mode, interval, frame rate, and output settings.
+- **Three trigger modes**, picked from a dropdown per trigger:
+  - **Manual** — start/stop with the capture switch or services (drive it from any automation).
+  - **Daily time window** — capture between two times every day, render at window end (overnight windows supported).
+  - **Entity state watch** — pick any entity and the states that mean "active" (e.g. a 3D printer's `printing` state). Capture starts when the entity enters those states and stops + renders when it leaves them — including going unavailable, so the video always completes.
+- **Videos land in your media folder by default**, so they're playable right away in HA's Media Browser — including NAS network storage you've mounted via *Settings → System → Storage* (it appears under `/media`). Custom output paths are supported, validated, and created automatically.
+- Frames are cleaned up after a successful render (configurable per trigger), and kept for re-rendering if ffmpeg fails.
+
+Requires Home Assistant 2025.7 or newer.
 
 ## Installation
 
@@ -24,29 +28,34 @@ Copy `custom_components/auto_time_lapse` into your config's `custom_components` 
 
 ## Configuration
 
-Add a profile via **Settings → Devices & Services → Add Integration → Auto Time Lapse**. Each profile is independent and creates its own device with a capture switch and status sensors.
+1. **Add the camera:** Settings → Devices & Services → Add Integration → Auto Time Lapse → pick the camera entity.
+2. **Add triggers:** on the integration's card, choose **Add trigger**. Each trigger asks for:
 
 | Option | Description | Default |
 | --- | --- | --- |
-| Name | Profile name; also the `{name}` filename placeholder | — |
-| Camera | Camera entity to snapshot | — |
+| Name | Trigger name; device name and the `{name}` filename placeholder | — |
+| Trigger mode | Manual / Daily time window / Entity state watch | Manual |
 | Capture interval | Seconds between snapshots | 60 |
 | Video frame rate | Output FPS (e.g. 30 fps with a 60 s interval ≈ 1 s of video per 30 min) | 30 |
-| Output directory | Empty = `<media>/auto_time_lapse/`. Custom paths must be in `allowlist_external_dirs` or a media dir | media folder |
+| Output directory | Created automatically; empty = `<media>/auto_time_lapse/` | media folder |
 | Filename pattern | Supports `{name}`, `{timestamp}`, `{entry_id}` | `{name}_{timestamp}.mp4` |
 | Keep frames | Keep snapshot JPEGs after rendering | off |
-| Daily schedule | Capture between start/end time daily; renders at window end | off |
-| Watch entity | Start when it turns `on`, stop + render when it turns `off` | — |
 
-All options can be changed later via **Configure** on the integration entry.
+Mode-specific steps follow: the schedule asks for start/end times; the watch asks for the entity and then shows a picker with **that entity's actual states** so you can choose which ones count as active (default `on`).
+
+Triggers can be reconfigured or deleted individually from the integration page at any time.
+
+### Example: 3D printer timelapse
+
+Add a trigger with mode *Entity state watch*, pick your printer's status sensor, and select `printing` (and `paused`, if you don't want pauses to split the video). The video renders automatically when the print finishes — or if the printer drops offline mid-print, the session ends and the video is completed with the frames captured so far.
 
 ### Writing to a NAS
 
-Add your share under **Settings → System → Storage** (Home Assistant OS). It mounts under `/media/<name>` and is part of HA's media dirs, so you can either leave the output directory empty and move the `auto_time_lapse` folder logic to it by setting the output directory to e.g. `/media/nas/timelapses`, or keep the default. No `allowlist_external_dirs` changes needed for media mounts.
+Add your share under **Settings → System → Storage** (Home Assistant OS). It mounts under `/media/<name>` and is part of HA's media dirs, so set the output directory to e.g. `/media/nas/timelapses` — no `allowlist_external_dirs` changes needed for media mounts.
 
 ## Entities
 
-Each profile creates:
+Each trigger creates a device with:
 
 | Entity | Description |
 | --- | --- |
@@ -57,7 +66,7 @@ Each profile creates:
 
 ## Services
 
-All services target a profile via `config_entry_id` (a picker in the UI).
+All services target a trigger via its device (a device picker in the UI editor).
 
 | Service | Description |
 | --- | --- |
@@ -76,7 +85,7 @@ automation:
     action:
       - service: auto_time_lapse.start
         data:
-          config_entry_id: abc123...   # use the picker in the UI editor
+          device_id: abc123...   # use the picker in the UI editor
   - alias: Sunset timelapse stop
     trigger:
       - platform: sun
@@ -84,12 +93,12 @@ automation:
     action:
       - service: auto_time_lapse.stop
         data:
-          config_entry_id: abc123...
+          device_id: abc123...
 ```
 
 ## Events
 
-When a video finishes, the integration fires `auto_time_lapse_finished` with `entry_id`, `name`, `path`, and `frame_count` — handy for notifications:
+When a video finishes, the integration fires `auto_time_lapse_finished` with `entry_id`, `subentry_id`, `name`, `path`, and `frame_count` — handy for notifications:
 
 ```yaml
 automation:
@@ -105,11 +114,16 @@ automation:
 
 ## Behavior notes
 
-- Working frames are stored under `<config>/auto_time_lapse/<entry_id>/<session>/` and never show up in the Media Browser.
+- Working frames are stored under `<config>/auto_time_lapse/<trigger id>/<session>/` and never show up in the Media Browser.
 - If a snapshot fails (camera offline), the frame is skipped and counted in `failed_frames`; the session keeps going.
 - If rendering fails, frames are kept regardless of the *keep frames* setting so you can fix the issue and call `auto_time_lapse.render`.
-- A restart mid-session abandons the session; leftover frames are cleaned at startup (unless *keep frames* is on). Session resume is a planned enhancement.
-- Stopping a session immediately frees the profile for a new session while the previous video renders in the background.
+- A restart mid-session abandons the session; leftover frames are cleaned at startup (unless *keep frames* is on). A watch or schedule trigger that should be active at startup starts a fresh session immediately.
+- Stopping a session immediately frees the trigger for a new session while the previous video renders in the background.
+- There is no pause/resume: if a watched device drops out mid-session, the video is completed with the frames captured so far.
+
+## Upgrading from 0.1.x
+
+0.2.0 restructured profiles into one entry per camera with trigger subentries, with no automatic migration. Delete the old Auto Time Lapse entries, then re-add: camera first, triggers on top. Services now target the trigger's **device** instead of a config entry id — update any automations that call them.
 
 ## Development
 
