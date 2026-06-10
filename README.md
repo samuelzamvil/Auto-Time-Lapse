@@ -27,6 +27,7 @@
   - **Manual** — a capture switch plus `start`/`stop` services, drivable from any automation.
   - **Daily time window** — capture between two times every day; overnight windows (22:00 → 06:00) just work.
   - **Entity state watch** — pick any entity and the states that mean *recording* (e.g. a 3D printer's `printing`). The video renders itself when the state ends — even if the device drops offline mid-job.
+- 🎞️ **Two capture cadences** — frames every N seconds, or **frames paced by a numeric entity**: one frame per 3D-printer layer, per 0.5 kWh on an energy meter, per km of a trip — any float step, rising, falling, or both.
 - 🎬 **Real videos, instantly playable** — H.264 MP4 with faststart, written to your media folder so it appears in HA's Media Browser. NAS shares mounted via *Settings → System → Storage* work out of the box.
 - 🧹 **Tidy by default** — frames are deleted after a successful render (keep them if you like), and kept automatically when a render fails so nothing is lost.
 - 🔔 **Automation-friendly** — an `auto_time_lapse_finished` event with the video path, per-trigger status & frame-count sensors, and a `media_content_id` attribute ready for `media_player.play_media`.
@@ -47,17 +48,23 @@ Every trigger asks for:
 | --- | --- | --- |
 | Name | Device name and the `{name}` filename placeholder | — |
 | Trigger mode | Manual / Daily time window / Entity state watch | Manual |
-| Capture interval | Seconds between snapshots | 60 |
+| Capture cadence | Time interval / Entity value change | Time interval |
 | Video frame rate | Output FPS (30 fps × 60 s interval ≈ 1 s of video per 30 min) | 30 |
 | Output directory | Created automatically; empty = `<media>/auto_time_lapse/` | media folder |
 | Filename pattern | `{name}`, `{timestamp}`, `{entry_id}` placeholders | `{name}_{timestamp}.mp4` |
 | Keep frames | Keep snapshot JPEGs after rendering | off |
 
-Mode-specific steps follow: the schedule asks for start/end times; the watch asks for the entity and then shows **that entity's actual states** so you pick which ones count as active (default `on`). Triggers can be reconfigured or deleted individually at any time.
+Follow-up steps depend on your choices:
 
-### 🖨️ Example: 3D-printer timelapse
+- **Time interval** cadence asks for the seconds between snapshots (default 60).
+- **Entity value change** cadence asks for a numeric entity, a step (any float > 0), and a direction (*any change* / *increase only* / *decrease only*). A frame is captured each time the value moves by at least the step since the last frame; movement against the chosen direction silently re-baselines, so a counter resetting for a new run just starts counting again.
+- The **schedule** trigger asks for start/end times; the **watch** trigger asks for the entity and then shows **that entity's actual states** so you pick which ones count as active (default `on`).
 
-Add a trigger with mode *Entity state watch*, pick your printer's status sensor, select `printing` (add `paused` if pauses shouldn't split the video). The timelapse renders automatically when the print finishes — and if the printer drops offline mid-print, the session ends and the video is completed with the frames captured so far.
+Triggers can be reconfigured or deleted individually at any time.
+
+### 🖨️ Example: 3D-printer timelapse (one frame per layer)
+
+Add a trigger with mode *Entity state watch* on your printer's status sensor with state `printing` (add `paused` if pauses shouldn't split the video), and cadence *Entity value change* on the **current layer** sensor with step 1. You get exactly one frame per layer — the classic print timelapse — rendered automatically when the print finishes. If the printer drops offline mid-print, the session ends and the video is completed with the frames captured so far.
 
 ### 🗄️ Writing to a NAS
 
