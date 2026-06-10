@@ -28,7 +28,7 @@
           "data": {
             "name": "Name",
             "trigger_mode": "Trigger mode",
-            "interval": "Capture interval",
+            "capture_mode": "Capture cadence",
             "output_fps": "Video frame rate (FPS)",
             "output_dir": "Output directory",
             "filename_pattern": "Filename pattern",
@@ -37,7 +37,7 @@
           "data_description": {
             "name": "Used for the device name and as the name placeholder in filenames.",
             "trigger_mode": "Manual: start and stop with the switch or services. Daily time window: capture between two times every day. Entity state watch: capture while another entity is in chosen states.",
-            "interval": "Seconds between snapshots while capturing.",
+            "capture_mode": "Time interval: a snapshot every N seconds. Entity value change: a snapshot each time a numeric entity moves by a chosen step, for example one frame per 3D-printer layer.",
             "output_dir": "Folder for finished videos, created automatically if it does not exist (for example /media/timelapses). Leave empty for the default media folder. Anything under /media shows up in the Media Browser, including NAS shares added via Settings > System > Storage. Paths outside a media folder must be listed in allowlist_external_dirs.",
             "filename_pattern": "Pattern for the video filename. Wrap the placeholders name, timestamp or entry_id in curly braces to insert them, as in the default value.",
             "keep_frames": "Keep the individual snapshot frames on disk after the video is rendered."
@@ -48,7 +48,7 @@
           "data": {
             "name": "Name",
             "trigger_mode": "Trigger mode",
-            "interval": "Capture interval",
+            "capture_mode": "Capture cadence",
             "output_fps": "Video frame rate (FPS)",
             "output_dir": "Output directory",
             "filename_pattern": "Filename pattern",
@@ -57,7 +57,7 @@
           "data_description": {
             "name": "Used for the device name and as the name placeholder in filenames.",
             "trigger_mode": "Manual: start and stop with the switch or services. Daily time window: capture between two times every day. Entity state watch: capture while another entity is in chosen states.",
-            "interval": "Seconds between snapshots while capturing.",
+            "capture_mode": "Time interval: a snapshot every N seconds. Entity value change: a snapshot each time a numeric entity moves by a chosen step, for example one frame per 3D-printer layer.",
             "output_dir": "Folder for finished videos, created automatically if it does not exist (for example /media/timelapses). Leave empty for the default media folder. Anything under /media shows up in the Media Browser, including NAS shares added via Settings > System > Storage. Paths outside a media folder must be listed in allowlist_external_dirs.",
             "filename_pattern": "Pattern for the video filename. Wrap the placeholders name, timestamp or entry_id in curly braces to insert them, as in the default value.",
             "keep_frames": "Keep the individual snapshot frames on disk after the video is rendered."
@@ -91,12 +91,35 @@
           "data_description": {
             "watch_states": "Capture runs while the entity is in any of these states. When it leaves them (including becoming unavailable), the capture stops and the video is rendered."
           }
+        },
+        "interval": {
+          "title": "Time interval",
+          "data": {
+            "interval": "Capture interval"
+          },
+          "data_description": {
+            "interval": "Seconds between snapshots while capturing."
+          }
+        },
+        "value_change": {
+          "title": "Entity value change",
+          "data": {
+            "value_entity": "Value entity",
+            "value_delta": "Capture every",
+            "value_direction": "Direction"
+          },
+          "data_description": {
+            "value_entity": "Numeric entity that paces the frames, for example a 3D printer's current layer sensor, an energy meter, or a distance sensor.",
+            "value_delta": "A frame is captured each time the value moves by at least this amount since the last frame. Use 1 for one frame per layer.",
+            "value_direction": "Which way the value must move to capture. With increase or decrease, movement the other way re-baselines silently (a layer counter resetting for a new print just starts counting again)."
+          }
         }
       },
       "error": {
         "path_not_allowed": "This path is not absolute or not allowed. Add it to allowlist_external_dirs or use a media folder.",
         "schedule_start_equals_end": "Start and end time must be different.",
-        "states_required": "Select at least one state."
+        "states_required": "Select at least one state.",
+        "delta_positive": "The step must be greater than zero."
       },
       "abort": {
         "reconfigure_successful": "Trigger updated."
@@ -109,6 +132,19 @@
         "manual": "Manual (switch and services)",
         "schedule": "Daily time window",
         "watch": "Entity state watch"
+      }
+    },
+    "capture_mode": {
+      "options": {
+        "time": "Time interval",
+        "value_change": "Entity value change"
+      }
+    },
+    "value_direction": {
+      "options": {
+        "any": "Any change",
+        "increase": "Increase only",
+        "decrease": "Decrease only"
       }
     }
   },

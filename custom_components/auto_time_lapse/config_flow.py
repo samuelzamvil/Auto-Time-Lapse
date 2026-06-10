@@ -34,6 +34,7 @@ import voluptuous as vol
 
 from .const import (
     CONF_CAMERA_ENTITY,
+    CONF_CAPTURE_MODE,
     CONF_FILENAME_PATTERN,
     CONF_INTERVAL,
     CONF_KEEP_FRAMES,
@@ -42,15 +43,21 @@ from .const import (
     CONF_SCHEDULE_END,
     CONF_SCHEDULE_START,
     CONF_TRIGGER_MODE,
+    CONF_VALUE_DELTA,
+    CONF_VALUE_DIRECTION,
+    CONF_VALUE_ENTITY,
     CONF_WATCH_ENTITY,
     CONF_WATCH_STATES,
     DEFAULT_FILENAME_PATTERN,
     DEFAULT_INTERVAL,
     DEFAULT_KEEP_FRAMES,
     DEFAULT_OUTPUT_FPS,
+    DEFAULT_VALUE_DELTA,
     DOMAIN,
     SUBENTRY_TYPE_TRIGGER,
+    CaptureMode,
     TriggerMode,
+    ValueDirection,
 )
 
 
@@ -67,17 +74,14 @@ def _trigger_schema() -> vol.Schema:
                     translation_key="trigger_mode",
                 )
             ),
-            vol.Required(CONF_INTERVAL, default=DEFAULT_INTERVAL): vol.All(
-                NumberSelector(
-                    NumberSelectorConfig(
-                        min=1,
-                        max=86400,
-                        step=1,
-                        unit_of_measurement="s",
-                        mode=NumberSelectorMode.BOX,
-                    )
-                ),
-                vol.Coerce(int),
+            vol.Required(
+                CONF_CAPTURE_MODE, default=CaptureMode.TIME.value
+            ): SelectSelector(
+                SelectSelectorConfig(
+                    options=[mode.value for mode in CaptureMode],
+                    mode=SelectSelectorMode.DROPDOWN,
+                    translation_key="capture_mode",
+                )
             ),
             vol.Required(CONF_OUTPUT_FPS, default=DEFAULT_OUTPUT_FPS): vol.All(
                 NumberSelector(
@@ -181,17 +185,96 @@ class TriggerSubentryFlow(ConfigSubentryFlow):
             errors = _validate_output_dir(self.hass, user_input)
             if not errors:
                 self._data.update(user_input)
-                mode = self._data[CONF_TRIGGER_MODE]
-                if mode == TriggerMode.SCHEDULE:
-                    return await self.async_step_schedule()
-                if mode == TriggerMode.WATCH:
-                    return await self.async_step_watch()
-                return self._finish()
+                if self._data[CONF_CAPTURE_MODE] == CaptureMode.VALUE_CHANGE:
+                    return await self.async_step_value_change()
+                return await self.async_step_interval()
         suggested = user_input if user_input is not None else self._data
         return self.async_show_form(
             step_id=step_id,
             data_schema=self.add_suggested_values_to_schema(
                 _trigger_schema(), suggested or None
+            ),
+            errors=errors,
+        )
+
+    async def _async_next_trigger_step(self) -> SubentryFlowResult:
+        mode = self._data[CONF_TRIGGER_MODE]
+        if mode == TriggerMode.SCHEDULE:
+            return await self.async_step_schedule()
+        if mode == TriggerMode.WATCH:
+            return await self.async_step_watch()
+        return self._finish()
+
+    async def async_step_interval(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Configure the time between snapshots."""
+        if user_input is not None:
+            self._data.update(user_input)
+            return await self._async_next_trigger_step()
+        schema = vol.Schema(
+            {
+                vol.Required(CONF_INTERVAL, default=DEFAULT_INTERVAL): vol.All(
+                    NumberSelector(
+                        NumberSelectorConfig(
+                            min=1,
+                            max=86400,
+                            step=1,
+                            unit_of_measurement="s",
+                            mode=NumberSelectorMode.BOX,
+                        )
+                    ),
+                    vol.Coerce(int),
+                )
+            }
+        )
+        return self.async_show_form(
+            step_id="interval",
+            data_schema=self.add_suggested_values_to_schema(
+                schema, self._data or None
+            ),
+        )
+
+    async def async_step_value_change(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Configure the value-change capture cadence."""
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            if float(user_input[CONF_VALUE_DELTA]) <= 0:
+                errors[CONF_VALUE_DELTA] = "delta_positive"
+            else:
+                self._data.update(user_input)
+                return await self._async_next_trigger_step()
+        schema = vol.Schema(
+            {
+                vol.Required(CONF_VALUE_ENTITY): EntitySelector(),
+                vol.Required(
+                    CONF_VALUE_DELTA, default=DEFAULT_VALUE_DELTA
+                ): vol.All(
+                    NumberSelector(
+                        NumberSelectorConfig(
+                            step="any", mode=NumberSelectorMode.BOX
+                        )
+                    ),
+                    vol.Coerce(float),
+                ),
+                vol.Required(
+                    CONF_VALUE_DIRECTION, default=ValueDirection.ANY.value
+                ): SelectSelector(
+                    SelectSelectorConfig(
+                        options=[d.value for d in ValueDirection],
+                        mode=SelectSelectorMode.DROPDOWN,
+                        translation_key="value_direction",
+                    )
+                ),
+            }
+        )
+        suggested = user_input if user_input is not None else self._data
+        return self.async_show_form(
+            step_id="value_change",
+            data_schema=self.add_suggested_values_to_schema(
+                schema, suggested or None
             ),
             errors=errors,
         )
@@ -282,6 +365,12 @@ class TriggerSubentryFlow(ConfigSubentryFlow):
         if mode != TriggerMode.WATCH:
             data.pop(CONF_WATCH_ENTITY, None)
             data.pop(CONF_WATCH_STATES, None)
+        if data[CONF_CAPTURE_MODE] == CaptureMode.VALUE_CHANGE:
+            data.pop(CONF_INTERVAL, None)
+        else:
+            data.pop(CONF_VALUE_ENTITY, None)
+            data.pop(CONF_VALUE_DELTA, None)
+            data.pop(CONF_VALUE_DIRECTION, None)
         if self._is_new:
             return self.async_create_entry(title=title, data=data)
         return self.async_update_and_abort(

@@ -30,6 +30,7 @@ from homeassistant.util import dt as dt_util, slugify
 
 from .const import (
     CONF_CAMERA_ENTITY,
+    CONF_CAPTURE_MODE,
     CONF_FILENAME_PATTERN,
     CONF_INTERVAL,
     CONF_KEEP_FRAMES,
@@ -38,20 +39,26 @@ from .const import (
     CONF_SCHEDULE_END,
     CONF_SCHEDULE_START,
     CONF_TRIGGER_MODE,
+    CONF_VALUE_DELTA,
+    CONF_VALUE_DIRECTION,
+    CONF_VALUE_ENTITY,
     CONF_WATCH_ENTITY,
     CONF_WATCH_STATES,
     DEFAULT_FILENAME_PATTERN,
     DEFAULT_INTERVAL,
     DEFAULT_KEEP_FRAMES,
     DEFAULT_OUTPUT_FPS,
+    DEFAULT_VALUE_DELTA,
     DOMAIN,
     EVENT_TIMELAPSE_FINISHED,
     FRAME_FILENAME,
     MAX_LOGGED_FAILURES,
     OUTPUT_SUBDIR,
     SNAPSHOT_TIMEOUT,
+    CaptureMode,
     SessionState,
     TriggerMode,
+    ValueDirection,
 )
 from .renderer import RenderError, async_render_timelapse
 
@@ -78,7 +85,8 @@ class TimelapseManager:
         self._last_session_dir: Path | None = None
         self._last_session_frames = 0
         self._render_lock = asyncio.Lock()
-        self._unsub_interval: CALLBACK_TYPE | None = None
+        self._unsub_capture: CALLBACK_TYPE | None = None
+        self._value_baseline: float | None = None
         self._unsubs: list[CALLBACK_TYPE] = []
         self._listeners: list[CALLBACK_TYPE] = []
 
@@ -108,6 +116,30 @@ class TimelapseManager:
     @property
     def interval(self) -> int:
         return int(self._options.get(CONF_INTERVAL, DEFAULT_INTERVAL))
+
+    @property
+    def capture_mode(self) -> CaptureMode:
+        try:
+            return CaptureMode(self._options.get(CONF_CAPTURE_MODE, CaptureMode.TIME))
+        except ValueError:
+            return CaptureMode.TIME
+
+    @property
+    def value_entity(self) -> str | None:
+        return self._options.get(CONF_VALUE_ENTITY)
+
+    @property
+    def value_delta(self) -> float:
+        return float(self._options.get(CONF_VALUE_DELTA, DEFAULT_VALUE_DELTA))
+
+    @property
+    def value_direction(self) -> ValueDirection:
+        try:
+            return ValueDirection(
+                self._options.get(CONF_VALUE_DIRECTION, ValueDirection.ANY)
+            )
+        except ValueError:
+            return ValueDirection.ANY
 
     @property
     def output_fps(self) -> int:
@@ -274,7 +306,7 @@ class TimelapseManager:
                 "Unloading %s while capturing; abandoning current session",
                 self.title,
             )
-        self._cancel_interval()
+        self._cancel_capture_listener()
         self._capturing = False
         self._session_dir = None
         for unsub in self._unsubs:
@@ -322,15 +354,30 @@ class TimelapseManager:
         self.failed_frame_count = 0
         self.session_started_at = dt_util.now()
         self._capturing = True
-        self._unsub_interval = async_track_time_interval(
-            self.hass, self._async_capture_frame, timedelta(seconds=self.interval)
-        )
-        _LOGGER.info(
-            "Started timelapse capture for %s (camera %s, every %d s)",
-            self.title,
-            self.camera_entity,
-            self.interval,
-        )
+        if self.capture_mode is CaptureMode.VALUE_CHANGE and self.value_entity:
+            self._value_baseline = self._current_value()
+            self._unsub_capture = async_track_state_change_event(
+                self.hass, [self.value_entity], self._async_on_value_change
+            )
+            _LOGGER.info(
+                "Started timelapse capture for %s (camera %s, frame per %s "
+                "change of %s, direction %s)",
+                self.title,
+                self.camera_entity,
+                self.value_delta,
+                self.value_entity,
+                self.value_direction.value,
+            )
+        else:
+            self._unsub_capture = async_track_time_interval(
+                self.hass, self._async_capture_frame, timedelta(seconds=self.interval)
+            )
+            _LOGGER.info(
+                "Started timelapse capture for %s (camera %s, every %d s)",
+                self.title,
+                self.camera_entity,
+                self.interval,
+            )
         self._notify()
         await self._async_capture_frame()
 
@@ -338,7 +385,7 @@ class TimelapseManager:
         """End the capture session, optionally rendering the video."""
         if not self._capturing:
             return
-        self._cancel_interval()
+        self._cancel_capture_listener()
         self._capturing = False
         session_dir = self._session_dir
         frames = self.frame_count
@@ -363,7 +410,7 @@ class TimelapseManager:
         """Abort the capture session and discard its frames."""
         if not self._capturing:
             return
-        self._cancel_interval()
+        self._cancel_capture_listener()
         self._capturing = False
         session_dir = self._session_dir
         self._session_dir = None
@@ -387,10 +434,59 @@ class TimelapseManager:
         await self._async_render(session_dir, self._last_session_frames)
 
     @callback
-    def _cancel_interval(self) -> None:
-        if self._unsub_interval is not None:
-            self._unsub_interval()
-            self._unsub_interval = None
+    def _cancel_capture_listener(self) -> None:
+        if self._unsub_capture is not None:
+            self._unsub_capture()
+            self._unsub_capture = None
+        self._value_baseline = None
+
+    def _current_value(self) -> float | None:
+        """Return the watched value entity's state as a float, if numeric."""
+        if not self.value_entity:
+            return None
+        state = self.hass.states.get(self.value_entity)
+        if state is None:
+            return None
+        try:
+            return float(state.state)
+        except (TypeError, ValueError):
+            return None
+
+    @callback
+    def _async_on_value_change(self, event: Event[EventStateChangedData]) -> None:
+        """Capture a frame when the watched value moves by at least the step."""
+        if not self._capturing:
+            return
+        new_state = event.data["new_state"]
+        if new_state is None:
+            return
+        try:
+            value = float(new_state.state)
+        except (TypeError, ValueError):
+            return
+        baseline = self._value_baseline
+        if baseline is None:
+            self._value_baseline = value
+            return
+        delta = value - baseline
+        direction = self.value_direction
+        capture = False
+        if direction is ValueDirection.ANY:
+            capture = abs(delta) >= self.value_delta
+        elif direction is ValueDirection.INCREASE:
+            if delta >= self.value_delta:
+                capture = True
+            elif delta < 0:
+                # Counter reset (e.g. new print started): follow it down.
+                self._value_baseline = value
+        else:  # ValueDirection.DECREASE
+            if -delta >= self.value_delta:
+                capture = True
+            elif delta > 0:
+                self._value_baseline = value
+        if capture:
+            self._value_baseline = value
+            self.hass.async_create_task(self._async_capture_frame())
 
     # ------------------------------------------------------------------ capture
 
