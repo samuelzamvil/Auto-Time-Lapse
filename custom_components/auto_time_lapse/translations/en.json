@@ -20,7 +20,7 @@
           "name": "Used for the device name and the '{name}' filename placeholder.",
           "camera_entity": "Camera to capture snapshots from.",
           "interval": "Seconds between snapshots while capturing.",
-          "output_dir": "Where finished videos are saved. Leave empty to use the media folder (visible in the Media Browser, including NAS network storage mounts). Custom paths must be in allowlist_external_dirs or a media dir.",
+          "output_dir": "Folder for finished videos, created automatically if it does not exist (for example /media/timelapses). Leave empty for the default media folder. Anything under /media shows up in the Media Browser, including NAS shares added via Settings > System > Storage. Paths outside a media folder must be listed in allowlist_external_dirs.",
           "filename_pattern": "Supports '{name}', '{timestamp}' and '{entry_id}' placeholders.",
           "keep_frames": "Keep the individual snapshot frames on disk after the video is rendered.",
           "schedule_enabled": "Capture every day between the start and end times; the video is rendered when the window ends. Overnight windows (e.g. 22:00 to 06:00) are supported.",
@@ -56,7 +56,7 @@
         "data_description": {
           "camera_entity": "Camera to capture snapshots from.",
           "interval": "Seconds between snapshots while capturing.",
-          "output_dir": "Where finished videos are saved. Leave empty to use the media folder (visible in the Media Browser, including NAS network storage mounts). Custom paths must be in allowlist_external_dirs or a media dir.",
+          "output_dir": "Folder for finished videos, created automatically if it does not exist (for example /media/timelapses). Leave empty for the default media folder. Anything under /media shows up in the Media Browser, including NAS shares added via Settings > System > Storage. Paths outside a media folder must be listed in allowlist_external_dirs.",
           "filename_pattern": "Supports '{name}', '{timestamp}' and '{entry_id}' placeholders.",
           "keep_frames": "Keep the individual snapshot frames on disk after the video is rendered.",
           "schedule_enabled": "Capture every day between the start and end times; the video is rendered when the window ends. Overnight windows (e.g. 22:00 to 06:00) are supported.",
