@@ -134,7 +134,7 @@ automation:
 - Working frames live under `<config>/auto_time_lapse/<trigger id>/<session>/` and never clutter the Media Browser.
 - A failed snapshot (camera offline) is skipped and counted in `failed_frames`; the session keeps going.
 - If rendering fails, frames are kept regardless of *keep frames* so you can fix the issue and call `auto_time_lapse.render`.
-- A restart mid-session abandons the session and cleans leftover frames at startup (unless *keep frames* is on). A watch or schedule trigger that should be active at startup starts a fresh session immediately.
+- A crash or restart mid-session is survivable: the session resumes where it left off and the final video is one continuous timelapse. This works for manual, schedule, and watch triggers alike. If the session can no longer continue — the schedule window ended or the watch entity went inactive while Home Assistant was down — the frames captured so far are rendered into a video at startup instead. Leftover frames that don't belong to an interrupted session are still cleaned at startup (unless *keep frames* is on).
 - Stopping a session immediately frees the trigger for a new one while the previous video renders in the background.
 - There is no pause/resume: if a watched device drops out mid-session, the video is completed with the frames captured so far.
 

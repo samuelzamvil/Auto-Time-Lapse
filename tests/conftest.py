@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 
+from homeassistant.components.camera import Image
 from homeassistant.config_entries import ConfigSubentryData
+from homeassistant.helpers import device_registry as dr
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -23,6 +26,43 @@ from custom_components.auto_time_lapse.const import (
 )
 
 TEST_SUBENTRY_ID = "test_sub_id"
+
+
+async def setup_integration(hass, entry: MockConfigEntry) -> None:
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done(wait_background_tasks=True)
+
+
+def get_device_id(hass) -> str:
+    device = dr.async_get(hass).async_get_device(
+        identifiers={(DOMAIN, TEST_SUBENTRY_ID)}
+    )
+    assert device is not None
+    return device.id
+
+
+def get_manager(entry: MockConfigEntry):
+    return entry.runtime_data[TEST_SUBENTRY_ID]
+
+
+@pytest.fixture
+def mock_camera_image():
+    """Return a fake JPEG for every snapshot request."""
+    with patch(
+        "custom_components.auto_time_lapse.manager.async_get_image",
+        return_value=Image("image/jpeg", b"fake-jpeg"),
+    ) as mock:
+        yield mock
+
+
+@pytest.fixture
+def mock_render():
+    """Skip the real ffmpeg invocation."""
+    with patch(
+        "custom_components.auto_time_lapse.manager.async_render_timelapse"
+    ) as mock:
+        yield mock
 
 
 @pytest.fixture(autouse=True)
