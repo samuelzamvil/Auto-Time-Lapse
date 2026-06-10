@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from homeassistant.config_entries import ConfigSubentryData
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -13,8 +14,13 @@ from custom_components.auto_time_lapse.const import (
     CONF_INTERVAL,
     CONF_KEEP_FRAMES,
     CONF_OUTPUT_FPS,
+    CONF_TRIGGER_MODE,
     DOMAIN,
+    SUBENTRY_TYPE_TRIGGER,
+    TriggerMode,
 )
+
+TEST_SUBENTRY_ID = "test_sub_id"
 
 
 @pytest.fixture(autouse=True)
@@ -31,10 +37,10 @@ def temp_config_dir(hass, tmp_path: Path):
 
 
 @pytest.fixture
-def base_options() -> dict:
-    """Minimal valid options for a profile."""
+def base_trigger_data() -> dict:
+    """Minimal valid data for a manual trigger subentry."""
     return {
-        CONF_CAMERA_ENTITY: "camera.demo",
+        CONF_TRIGGER_MODE: TriggerMode.MANUAL.value,
         CONF_INTERVAL: 60,
         CONF_OUTPUT_FPS: 30,
         CONF_FILENAME_PATTERN: "{name}_{timestamp}.mp4",
@@ -42,13 +48,27 @@ def base_options() -> dict:
     }
 
 
-@pytest.fixture
-def mock_entry(base_options) -> MockConfigEntry:
-    """A mock config entry for a timelapse profile."""
+def make_entry(trigger_data: dict, title: str = "Test Lapse") -> MockConfigEntry:
+    """Build a camera entry with a single trigger subentry."""
     return MockConfigEntry(
         domain=DOMAIN,
-        title="Test Lapse",
-        data={},
-        options=base_options,
+        title="Demo Camera",
+        data={CONF_CAMERA_ENTITY: "camera.demo"},
         entry_id="test_entry_id",
+        version=2,
+        subentries_data=[
+            ConfigSubentryData(
+                data=trigger_data,
+                subentry_id=TEST_SUBENTRY_ID,
+                subentry_type=SUBENTRY_TYPE_TRIGGER,
+                title=title,
+                unique_id=None,
+            )
+        ],
     )
+
+
+@pytest.fixture
+def mock_entry(base_trigger_data) -> MockConfigEntry:
+    """A camera entry with one manual trigger."""
+    return make_entry(base_trigger_data)
