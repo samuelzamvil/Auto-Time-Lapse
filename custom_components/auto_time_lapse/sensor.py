@@ -1,0 +1,79 @@
+"""Sensor platform for the Auto Time Lapse integration."""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
+
+from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
+from homeassistant.const import EntityCategory
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+
+from .const import SessionState
+from .entity import AutoTimeLapseEntity
+from .manager import TimelapseManager
+
+if TYPE_CHECKING:
+    from . import AutoTimeLapseConfigEntry
+
+
+async def async_setup_entry(
+    hass: HomeAssistant,
+    entry: AutoTimeLapseConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
+    """Set up the profile sensors."""
+    manager = entry.runtime_data
+    async_add_entities(
+        [
+            TimelapseStatusSensor(manager),
+            TimelapseFrameCountSensor(manager),
+            TimelapseLastVideoSensor(manager),
+        ]
+    )
+
+
+class TimelapseStatusSensor(AutoTimeLapseEntity, SensorEntity):
+    """Current state of the profile: idle, capturing or rendering."""
+
+    _attr_device_class = SensorDeviceClass.ENUM
+    _attr_options = [state.value for state in SessionState]
+
+    def __init__(self, manager: TimelapseManager) -> None:
+        super().__init__(manager, "status")
+
+    @property
+    def native_value(self) -> str:
+        return self._manager.state.value
+
+
+class TimelapseFrameCountSensor(AutoTimeLapseEntity, SensorEntity):
+    """Frames captured in the current/last session."""
+
+    def __init__(self, manager: TimelapseManager) -> None:
+        super().__init__(manager, "frame_count")
+
+    @property
+    def native_value(self) -> int:
+        return self._manager.frame_count
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        return {"failed_frames": self._manager.failed_frame_count}
+
+
+class TimelapseLastVideoSensor(AutoTimeLapseEntity, SensorEntity):
+    """Path of the most recently rendered video."""
+
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, manager: TimelapseManager) -> None:
+        super().__init__(manager, "last_video")
+
+    @property
+    def native_value(self) -> str | None:
+        return self._manager.last_video_path
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        return {"media_content_id": self._manager.media_content_id}
