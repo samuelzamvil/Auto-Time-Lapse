@@ -12,6 +12,9 @@ CONF_CAMERA_ENTITY = "camera_entity"
 CONF_TRIGGER_MODE = "trigger_mode"
 CONF_CAPTURE_MODE = "capture_mode"
 CONF_INTERVAL = "interval"
+CONF_DURATION_ENTITY = "duration_entity"
+CONF_TARGET_LENGTH = "target_length"
+CONF_FALLBACK_INTERVAL = "fallback_interval"
 CONF_VALUE_ENTITY = "value_entity"
 CONF_VALUE_DELTA = "value_delta"
 CONF_VALUE_DIRECTION = "value_direction"
@@ -25,6 +28,8 @@ CONF_WATCH_ENTITY = "watch_entity"
 CONF_WATCH_STATES = "watch_states"
 
 DEFAULT_INTERVAL = 60
+DEFAULT_TARGET_LENGTH = 30.0
+DEFAULT_FALLBACK_INTERVAL = DEFAULT_INTERVAL
 DEFAULT_VALUE_DELTA = 1.0
 DEFAULT_OUTPUT_FPS = 30
 DEFAULT_FILENAME_PATTERN = "{name}_{timestamp}.mp4"
@@ -68,6 +73,7 @@ class CaptureMode(StrEnum):
     """What paces the frames while a session is running."""
 
     TIME = "time"
+    TIME_FIT = "time_fit"
     VALUE_CHANGE = "value_change"
 
 

@@ -37,7 +37,7 @@
           "data_description": {
             "name": "Used for the device name and as the name placeholder in filenames.",
             "trigger_mode": "Manual: start and stop with the switch or services. Daily time window: capture between two times every day. Entity state watch: capture while another entity is in chosen states.",
-            "capture_mode": "Time interval: a snapshot every N seconds. Entity value change: a snapshot each time a numeric entity moves by a chosen step, for example one frame per 3D-printer layer.",
+            "capture_mode": "Time interval: a snapshot every N seconds. Fit target video length: the interval is computed from a duration entity so the video always comes out about a chosen length. Entity value change: a snapshot each time a numeric entity moves by a chosen step, for example one frame per 3D-printer layer.",
             "output_dir": "Folder for finished videos, created automatically if it does not exist (for example /media/timelapses). Leave empty for the default media folder. Anything under /media shows up in the Media Browser, including NAS shares added via Settings > System > Storage. Paths outside a media folder must be listed in allowlist_external_dirs.",
             "filename_pattern": "Pattern for the video filename. Wrap the placeholders name, timestamp or entry_id in curly braces to insert them, as in the default value.",
             "keep_frames": "Keep the individual snapshot frames on disk after the video is rendered."
@@ -57,7 +57,7 @@
           "data_description": {
             "name": "Used for the device name and as the name placeholder in filenames.",
             "trigger_mode": "Manual: start and stop with the switch or services. Daily time window: capture between two times every day. Entity state watch: capture while another entity is in chosen states.",
-            "capture_mode": "Time interval: a snapshot every N seconds. Entity value change: a snapshot each time a numeric entity moves by a chosen step, for example one frame per 3D-printer layer.",
+            "capture_mode": "Time interval: a snapshot every N seconds. Fit target video length: the interval is computed from a duration entity so the video always comes out about a chosen length. Entity value change: a snapshot each time a numeric entity moves by a chosen step, for example one frame per 3D-printer layer.",
             "output_dir": "Folder for finished videos, created automatically if it does not exist (for example /media/timelapses). Leave empty for the default media folder. Anything under /media shows up in the Media Browser, including NAS shares added via Settings > System > Storage. Paths outside a media folder must be listed in allowlist_external_dirs.",
             "filename_pattern": "Pattern for the video filename. Wrap the placeholders name, timestamp or entry_id in curly braces to insert them, as in the default value.",
             "keep_frames": "Keep the individual snapshot frames on disk after the video is rendered."
@@ -101,6 +101,19 @@
             "interval": "Seconds between snapshots while capturing."
           }
         },
+        "fit_length": {
+          "title": "Fit a target video length",
+          "data": {
+            "duration_entity": "Duration entity",
+            "target_length": "Target video length",
+            "fallback_interval": "Fallback interval"
+          },
+          "data_description": {
+            "duration_entity": "Entity that reports the expected total duration of the session in seconds, for example a 3D printer's estimated print time sensor.",
+            "target_length": "Desired length of the finished video. The capture interval is computed once when the session starts (duration divided by frame rate times this length, never below 1 second) and stays fixed for the whole session.",
+            "fallback_interval": "Seconds between snapshots when the duration entity cannot be read as a positive number at session start."
+          }
+        },
         "value_change": {
           "title": "Entity value change",
           "data": {
@@ -119,7 +132,8 @@
         "path_not_allowed": "This path is not absolute or not allowed. Add it to allowlist_external_dirs or use a media folder.",
         "schedule_start_equals_end": "Start and end time must be different.",
         "states_required": "Select at least one state.",
-        "delta_positive": "The step must be greater than zero."
+        "delta_positive": "The step must be greater than zero.",
+        "length_positive": "The target length must be greater than zero."
       },
       "abort": {
         "reconfigure_successful": "Trigger updated."
@@ -137,6 +151,7 @@
     "capture_mode": {
       "options": {
         "time": "Time interval",
+        "time_fit": "Fit target video length",
         "value_change": "Entity value change"
       }
     },

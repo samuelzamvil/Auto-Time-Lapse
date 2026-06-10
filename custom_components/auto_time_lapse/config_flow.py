@@ -35,6 +35,8 @@ import voluptuous as vol
 from .const import (
     CONF_CAMERA_ENTITY,
     CONF_CAPTURE_MODE,
+    CONF_DURATION_ENTITY,
+    CONF_FALLBACK_INTERVAL,
     CONF_FILENAME_PATTERN,
     CONF_INTERVAL,
     CONF_KEEP_FRAMES,
@@ -42,16 +44,19 @@ from .const import (
     CONF_OUTPUT_FPS,
     CONF_SCHEDULE_END,
     CONF_SCHEDULE_START,
+    CONF_TARGET_LENGTH,
     CONF_TRIGGER_MODE,
     CONF_VALUE_DELTA,
     CONF_VALUE_DIRECTION,
     CONF_VALUE_ENTITY,
     CONF_WATCH_ENTITY,
     CONF_WATCH_STATES,
+    DEFAULT_FALLBACK_INTERVAL,
     DEFAULT_FILENAME_PATTERN,
     DEFAULT_INTERVAL,
     DEFAULT_KEEP_FRAMES,
     DEFAULT_OUTPUT_FPS,
+    DEFAULT_TARGET_LENGTH,
     DEFAULT_VALUE_DELTA,
     DOMAIN,
     SUBENTRY_TYPE_TRIGGER,
@@ -187,6 +192,8 @@ class TriggerSubentryFlow(ConfigSubentryFlow):
                 self._data.update(user_input)
                 if self._data[CONF_CAPTURE_MODE] == CaptureMode.VALUE_CHANGE:
                     return await self.async_step_value_change()
+                if self._data[CONF_CAPTURE_MODE] == CaptureMode.TIME_FIT:
+                    return await self.async_step_fit_length()
                 return await self.async_step_interval()
         suggested = user_input if user_input is not None else self._data
         return self.async_show_form(
@@ -233,6 +240,57 @@ class TriggerSubentryFlow(ConfigSubentryFlow):
             data_schema=self.add_suggested_values_to_schema(
                 schema, self._data or None
             ),
+        )
+
+    async def async_step_fit_length(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Configure the fit-target-video-length capture cadence."""
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            if float(user_input[CONF_TARGET_LENGTH]) <= 0:
+                errors[CONF_TARGET_LENGTH] = "length_positive"
+            else:
+                self._data.update(user_input)
+                return await self._async_next_trigger_step()
+        schema = vol.Schema(
+            {
+                vol.Required(CONF_DURATION_ENTITY): EntitySelector(),
+                vol.Required(
+                    CONF_TARGET_LENGTH, default=DEFAULT_TARGET_LENGTH
+                ): vol.All(
+                    NumberSelector(
+                        NumberSelectorConfig(
+                            step="any",
+                            unit_of_measurement="s",
+                            mode=NumberSelectorMode.BOX,
+                        )
+                    ),
+                    vol.Coerce(float),
+                ),
+                vol.Required(
+                    CONF_FALLBACK_INTERVAL, default=DEFAULT_FALLBACK_INTERVAL
+                ): vol.All(
+                    NumberSelector(
+                        NumberSelectorConfig(
+                            min=1,
+                            max=86400,
+                            step=1,
+                            unit_of_measurement="s",
+                            mode=NumberSelectorMode.BOX,
+                        )
+                    ),
+                    vol.Coerce(int),
+                ),
+            }
+        )
+        suggested = user_input if user_input is not None else self._data
+        return self.async_show_form(
+            step_id="fit_length",
+            data_schema=self.add_suggested_values_to_schema(
+                schema, suggested or None
+            ),
+            errors=errors,
         )
 
     async def async_step_value_change(
@@ -365,9 +423,14 @@ class TriggerSubentryFlow(ConfigSubentryFlow):
         if mode != TriggerMode.WATCH:
             data.pop(CONF_WATCH_ENTITY, None)
             data.pop(CONF_WATCH_STATES, None)
-        if data[CONF_CAPTURE_MODE] == CaptureMode.VALUE_CHANGE:
+        cadence = data[CONF_CAPTURE_MODE]
+        if cadence != CaptureMode.TIME:
             data.pop(CONF_INTERVAL, None)
-        else:
+        if cadence != CaptureMode.TIME_FIT:
+            data.pop(CONF_DURATION_ENTITY, None)
+            data.pop(CONF_TARGET_LENGTH, None)
+            data.pop(CONF_FALLBACK_INTERVAL, None)
+        if cadence != CaptureMode.VALUE_CHANGE:
             data.pop(CONF_VALUE_ENTITY, None)
             data.pop(CONF_VALUE_DELTA, None)
             data.pop(CONF_VALUE_DIRECTION, None)
