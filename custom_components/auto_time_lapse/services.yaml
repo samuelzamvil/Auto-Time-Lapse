@@ -1,0 +1,36 @@
+start:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: auto_time_lapse
+
+stop:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: auto_time_lapse
+    render:
+      required: false
+      default: true
+      selector:
+        boolean:
+
+render:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: auto_time_lapse
+
+cancel:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: auto_time_lapse
