@@ -4,18 +4,11 @@ from __future__ import annotations
 
 from datetime import timedelta
 from pathlib import Path
-from unittest.mock import patch
 
-from homeassistant.components.camera import Image
 from homeassistant.const import STATE_OFF, STATE_ON, STATE_UNAVAILABLE
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers import device_registry as dr
 from homeassistant.util import dt as dt_util
-import pytest
-from pytest_homeassistant_custom_component.common import (
-    MockConfigEntry,
-    async_fire_time_changed,
-)
+from pytest_homeassistant_custom_component.common import async_fire_time_changed
 
 from custom_components.auto_time_lapse.const import (
     ATTR_DEVICE_ID,
@@ -37,44 +30,13 @@ from custom_components.auto_time_lapse.const import (
     ValueDirection,
 )
 
-from .conftest import TEST_SUBENTRY_ID, make_entry
-
-
-async def setup_integration(hass, entry: MockConfigEntry) -> None:
-    entry.add_to_hass(hass)
-    assert await hass.config_entries.async_setup(entry.entry_id)
-    await hass.async_block_till_done(wait_background_tasks=True)
-
-
-def get_device_id(hass) -> str:
-    device = dr.async_get(hass).async_get_device(
-        identifiers={(DOMAIN, TEST_SUBENTRY_ID)}
-    )
-    assert device is not None
-    return device.id
-
-
-def get_manager(entry: MockConfigEntry):
-    return entry.runtime_data[TEST_SUBENTRY_ID]
-
-
-@pytest.fixture
-def mock_camera_image():
-    """Return a fake JPEG for every snapshot request."""
-    with patch(
-        "custom_components.auto_time_lapse.manager.async_get_image",
-        return_value=Image("image/jpeg", b"fake-jpeg"),
-    ) as mock:
-        yield mock
-
-
-@pytest.fixture
-def mock_render():
-    """Skip the real ffmpeg invocation."""
-    with patch(
-        "custom_components.auto_time_lapse.manager.async_render_timelapse"
-    ) as mock:
-        yield mock
+from .conftest import (
+    TEST_SUBENTRY_ID,
+    get_device_id,
+    get_manager,
+    make_entry,
+    setup_integration,
+)
 
 
 def _frames_dir(tmp_path: Path) -> Path:
