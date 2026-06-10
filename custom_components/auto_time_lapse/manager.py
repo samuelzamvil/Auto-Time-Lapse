@@ -10,13 +10,8 @@ from pathlib import Path
 import shutil
 
 from homeassistant.components.camera import async_get_image
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import (
-    EVENT_HOMEASSISTANT_STARTED,
-    STATE_ON,
-    STATE_UNAVAILABLE,
-    STATE_UNKNOWN,
-)
+from homeassistant.config_entries import ConfigEntry, ConfigSubentry
+from homeassistant.const import EVENT_HOMEASSISTANT_STARTED, STATE_ON
 from homeassistant.core import (
     CALLBACK_TYPE,
     CoreState,
@@ -40,10 +35,11 @@ from .const import (
     CONF_KEEP_FRAMES,
     CONF_OUTPUT_DIR,
     CONF_OUTPUT_FPS,
-    CONF_SCHEDULE_ENABLED,
     CONF_SCHEDULE_END,
     CONF_SCHEDULE_START,
+    CONF_TRIGGER_MODE,
     CONF_WATCH_ENTITY,
+    CONF_WATCH_STATES,
     DEFAULT_FILENAME_PATTERN,
     DEFAULT_INTERVAL,
     DEFAULT_KEEP_FRAMES,
@@ -55,6 +51,7 @@ from .const import (
     OUTPUT_SUBDIR,
     SNAPSHOT_TIMEOUT,
     SessionState,
+    TriggerMode,
 )
 from .renderer import RenderError, async_render_timelapse
 
@@ -62,11 +59,14 @@ _LOGGER = logging.getLogger(__name__)
 
 
 class TimelapseManager:
-    """Drives one timelapse profile: triggers, frame capture, and rendering."""
+    """Drives one trigger profile: trigger wiring, frame capture, rendering."""
 
-    def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
+    def __init__(
+        self, hass: HomeAssistant, entry: ConfigEntry, subentry: ConfigSubentry
+    ) -> None:
         self.hass = hass
         self.entry = entry
+        self.subentry = subentry
         self.frame_count = 0
         self.failed_frame_count = 0
         self.last_video_path: str | None = None
@@ -86,11 +86,24 @@ class TimelapseManager:
 
     @property
     def _options(self) -> dict:
-        return dict(self.entry.options)
+        return dict(self.subentry.data)
+
+    @property
+    def title(self) -> str:
+        return self.subentry.title
 
     @property
     def camera_entity(self) -> str:
-        return self._options[CONF_CAMERA_ENTITY]
+        return self.entry.data[CONF_CAMERA_ENTITY]
+
+    @property
+    def trigger_mode(self) -> TriggerMode:
+        try:
+            return TriggerMode(
+                self._options.get(CONF_TRIGGER_MODE, TriggerMode.MANUAL)
+            )
+        except ValueError:
+            return TriggerMode.MANUAL
 
     @property
     def interval(self) -> int:
@@ -103,6 +116,10 @@ class TimelapseManager:
     @property
     def keep_frames(self) -> bool:
         return bool(self._options.get(CONF_KEEP_FRAMES, DEFAULT_KEEP_FRAMES))
+
+    @property
+    def watch_states(self) -> list[str]:
+        return list(self._options.get(CONF_WATCH_STATES) or [STATE_ON])
 
     @property
     def state(self) -> SessionState:
@@ -131,31 +148,30 @@ class TimelapseManager:
 
     @property
     def _frames_base_dir(self) -> Path:
-        return Path(self.hass.config.path(DOMAIN, self.entry.entry_id))
+        return Path(self.hass.config.path(DOMAIN, self.subentry.subentry_id))
 
     # ------------------------------------------------------------------ setup
 
     async def async_setup(self) -> None:
-        """Wire triggers and clean up stale frames from previous runs."""
+        """Wire the trigger and clean up stale frames from previous runs."""
         await self._async_cleanup_stale_frames()
 
         options = self._options
-        if options.get(CONF_SCHEDULE_ENABLED):
+        mode = self.trigger_mode
+        if mode is TriggerMode.SCHEDULE:
             self._setup_schedule(options)
-        if watch_entity := options.get(CONF_WATCH_ENTITY):
-            self._unsubs.append(
-                async_track_state_change_event(
-                    self.hass, [watch_entity], self._async_on_watch_change
-                )
-            )
+        elif mode is TriggerMode.WATCH and (
+            watch_entity := options.get(CONF_WATCH_ENTITY)
+        ):
+            self._setup_watch(watch_entity)
 
     def _setup_schedule(self, options: dict) -> None:
-        start_t = dt_util.parse_time(options[CONF_SCHEDULE_START])
-        end_t = dt_util.parse_time(options[CONF_SCHEDULE_END])
+        start_t = dt_util.parse_time(options.get(CONF_SCHEDULE_START) or "")
+        end_t = dt_util.parse_time(options.get(CONF_SCHEDULE_END) or "")
         if start_t is None or end_t is None or start_t == end_t:
             _LOGGER.error(
                 "Invalid schedule for %s (start=%s end=%s); schedule disabled",
-                self.entry.title,
+                self.title,
                 options.get(CONF_SCHEDULE_START),
                 options.get(CONF_SCHEDULE_END),
             )
@@ -178,14 +194,42 @@ class TimelapseManager:
                 second=end_t.second,
             )
         )
+
         # If we load mid-window (HA restart or entry reload), start right away.
-        if self.hass.state is CoreState.running:
+        @callback
+        def _initial_check() -> None:
             if self._is_in_window(start_t, end_t, dt_util.now().time()):
                 self.hass.async_create_task(self.async_start())
+
+        self._defer_until_running(_initial_check)
+
+    def _setup_watch(self, watch_entity: str) -> None:
+        self._unsubs.append(
+            async_track_state_change_event(
+                self.hass, [watch_entity], self._async_on_watch_change
+            )
+        )
+
+        # If the entity is already active (e.g. print running at HA restart),
+        # start right away.
+        @callback
+        def _initial_check() -> None:
+            state = self.hass.states.get(watch_entity)
+            if state is not None and state.state in self.watch_states:
+                self.hass.async_create_task(self.async_start())
+
+        self._defer_until_running(_initial_check)
+
+    @callback
+    def _defer_until_running(self, check: CALLBACK_TYPE) -> None:
+        """Run check now, or once HA has fully started if it is still booting."""
+        if self.hass.state is CoreState.running:
+            check()
         else:
-            async def _on_started(_: Event) -> None:
-                if self._is_in_window(start_t, end_t, dt_util.now().time()):
-                    await self.async_start()
+
+            @callback
+            def _on_started(_: Event) -> None:
+                check()
 
             self._unsubs.append(
                 self.hass.bus.async_listen_once(
@@ -220,7 +264,7 @@ class TimelapseManager:
             _LOGGER.info(
                 "Removed %d stale frame session(s) for %s from a previous run",
                 removed,
-                self.entry.title,
+                self.title,
             )
 
     async def async_unload(self) -> None:
@@ -228,7 +272,7 @@ class TimelapseManager:
         if self._capturing:
             _LOGGER.info(
                 "Unloading %s while capturing; abandoning current session",
-                self.entry.title,
+                self.title,
             )
         self._cancel_interval()
         self._capturing = False
@@ -248,13 +292,16 @@ class TimelapseManager:
 
     @callback
     def _async_on_watch_change(self, event: Event[EventStateChangedData]) -> None:
+        active_states = self.watch_states
         new_state = event.data["new_state"]
         old_state = event.data["old_state"]
-        if new_state is None or new_state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
-            return
-        if new_state.state == STATE_ON:
+        new_active = new_state is not None and new_state.state in active_states
+        old_active = old_state is not None and old_state.state in active_states
+        if new_active and not old_active:
             self.hass.async_create_task(self.async_start())
-        elif old_state is not None and old_state.state == STATE_ON:
+        elif old_active and not new_active:
+            # Includes the entity being removed or going unavailable/unknown:
+            # the session ends and the video is completed.
             self.hass.async_create_task(self.async_stop(render=True))
 
     # ------------------------------------------------------------------ session
@@ -262,9 +309,11 @@ class TimelapseManager:
     async def async_start(self) -> None:
         """Begin a capture session."""
         if self._capturing:
-            _LOGGER.debug("%s is already capturing", self.entry.title)
+            _LOGGER.debug("%s is already capturing", self.title)
             return
-        session_dir = self._frames_base_dir / dt_util.now().strftime("%Y%m%d_%H%M%S_%f")
+        session_dir = self._frames_base_dir / dt_util.now().strftime(
+            "%Y%m%d_%H%M%S_%f"
+        )
         await self.hass.async_add_executor_job(
             partial(session_dir.mkdir, parents=True, exist_ok=True)
         )
@@ -278,7 +327,7 @@ class TimelapseManager:
         )
         _LOGGER.info(
             "Started timelapse capture for %s (camera %s, every %d s)",
-            self.entry.title,
+            self.title,
             self.camera_entity,
             self.interval,
         )
@@ -297,7 +346,7 @@ class TimelapseManager:
         self.session_started_at = None
         _LOGGER.info(
             "Stopped timelapse capture for %s with %d frame(s)",
-            self.entry.title,
+            self.title,
             frames,
         )
         if session_dir is not None:
@@ -321,7 +370,7 @@ class TimelapseManager:
         self.session_started_at = None
         if session_dir is not None:
             await self._async_remove_dir(session_dir)
-        _LOGGER.info("Cancelled timelapse capture for %s", self.entry.title)
+        _LOGGER.info("Cancelled timelapse capture for %s", self.title)
         self._notify()
 
     async def async_rerender(self) -> None:
@@ -349,7 +398,7 @@ class TimelapseManager:
         if not self._capturing or self._session_dir is None:
             return
         if self._capture_in_flight:
-            _LOGGER.debug("Skipping frame for %s; capture in flight", self.entry.title)
+            _LOGGER.debug("Skipping frame for %s; capture in flight", self.title)
             return
         self._capture_in_flight = True
         session_dir = self._session_dir
@@ -367,7 +416,7 @@ class TimelapseManager:
             log(
                 "Failed to capture frame from %s for %s (%d failure(s) so far): %s",
                 self.camera_entity,
-                self.entry.title,
+                self.title,
                 self.failed_frame_count,
                 err,
             )
@@ -394,7 +443,7 @@ class TimelapseManager:
                 _LOGGER.info(
                     "Rendering %d frame(s) for %s to %s",
                     frames,
-                    self.entry.title,
+                    self.title,
                     output_path,
                 )
                 await async_render_timelapse(
@@ -403,7 +452,7 @@ class TimelapseManager:
             except (RenderError, HomeAssistantError) as err:
                 _LOGGER.error(
                     "Timelapse render failed for %s; frames kept at %s: %s",
-                    self.entry.title,
+                    self.title,
                     session_dir,
                     err,
                 )
@@ -415,13 +464,14 @@ class TimelapseManager:
                     EVENT_TIMELAPSE_FINISHED,
                     {
                         "entry_id": self.entry.entry_id,
-                        "name": self.entry.title,
+                        "subentry_id": self.subentry.subentry_id,
+                        "name": self.title,
                         "path": str(output_path),
                         "frame_count": frames,
                     },
                 )
                 _LOGGER.info(
-                    "Timelapse for %s saved to %s", self.entry.title, output_path
+                    "Timelapse for %s saved to %s", self.title, output_path
                 )
                 if self.keep_frames:
                     self._last_session_dir = session_dir
@@ -456,9 +506,9 @@ class TimelapseManager:
     def _build_filename(self) -> str:
         pattern = self._options.get(CONF_FILENAME_PATTERN) or DEFAULT_FILENAME_PATTERN
         values = {
-            "name": slugify(self.entry.title),
+            "name": slugify(self.title),
             "timestamp": dt_util.now().strftime("%Y-%m-%d_%H-%M-%S"),
-            "entry_id": self.entry.entry_id,
+            "entry_id": self.subentry.subentry_id,
         }
         try:
             filename = pattern.format(**values)
@@ -466,7 +516,7 @@ class TimelapseManager:
             _LOGGER.warning(
                 "Invalid filename pattern %r for %s; using default",
                 pattern,
-                self.entry.title,
+                self.title,
             )
             filename = DEFAULT_FILENAME_PATTERN.format(**values)
         if not filename.endswith(".mp4"):

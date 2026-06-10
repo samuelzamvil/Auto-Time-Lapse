@@ -1,17 +1,17 @@
 start:
   fields:
-    config_entry_id:
+    device_id:
       required: true
       selector:
-        config_entry:
+        device:
           integration: auto_time_lapse
 
 stop:
   fields:
-    config_entry_id:
+    device_id:
       required: true
       selector:
-        config_entry:
+        device:
           integration: auto_time_lapse
     render:
       required: false
@@ -21,16 +21,16 @@ stop:
 
 render:
   fields:
-    config_entry_id:
+    device_id:
       required: true
       selector:
-        config_entry:
+        device:
           integration: auto_time_lapse
 
 cancel:
   fields:
-    config_entry_id:
+    device_id:
       required: true
       selector:
-        config_entry:
+        device:
           integration: auto_time_lapse

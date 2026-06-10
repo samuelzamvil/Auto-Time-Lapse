@@ -6,16 +6,19 @@ from enum import StrEnum
 
 DOMAIN = "auto_time_lapse"
 
+SUBENTRY_TYPE_TRIGGER = "trigger"
+
 CONF_CAMERA_ENTITY = "camera_entity"
+CONF_TRIGGER_MODE = "trigger_mode"
 CONF_INTERVAL = "interval"
 CONF_OUTPUT_FPS = "output_fps"
 CONF_OUTPUT_DIR = "output_dir"
 CONF_FILENAME_PATTERN = "filename_pattern"
 CONF_KEEP_FRAMES = "keep_frames"
-CONF_SCHEDULE_ENABLED = "schedule_enabled"
 CONF_SCHEDULE_START = "schedule_start"
 CONF_SCHEDULE_END = "schedule_end"
 CONF_WATCH_ENTITY = "watch_entity"
+CONF_WATCH_STATES = "watch_states"
 
 DEFAULT_INTERVAL = 60
 DEFAULT_OUTPUT_FPS = 30
@@ -27,7 +30,7 @@ SERVICE_STOP = "stop"
 SERVICE_RENDER = "render"
 SERVICE_CANCEL = "cancel"
 
-ATTR_CONFIG_ENTRY_ID = "config_entry_id"
+ATTR_DEVICE_ID = "device_id"
 ATTR_RENDER = "render"
 
 EVENT_TIMELAPSE_FINISHED = "auto_time_lapse_finished"
@@ -41,8 +44,16 @@ RENDER_TIMEOUT = 600
 
 
 class SessionState(StrEnum):
-    """State of a timelapse profile."""
+    """State of a timelapse trigger profile."""
 
     IDLE = "idle"
     CAPTURING = "capturing"
     RENDERING = "rendering"
+
+
+class TriggerMode(StrEnum):
+    """How a capture session is started and stopped."""
+
+    MANUAL = "manual"
+    SCHEDULE = "schedule"
+    WATCH = "watch"

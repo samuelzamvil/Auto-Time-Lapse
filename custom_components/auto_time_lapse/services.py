@@ -7,11 +7,11 @@ from typing import TYPE_CHECKING
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant, ServiceCall, callback
 from homeassistant.exceptions import ServiceValidationError
-from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers import config_validation as cv, device_registry as dr
 import voluptuous as vol
 
 from .const import (
-    ATTR_CONFIG_ENTRY_ID,
+    ATTR_DEVICE_ID,
     ATTR_RENDER,
     DOMAIN,
     SERVICE_CANCEL,
@@ -23,28 +23,39 @@ from .const import (
 if TYPE_CHECKING:
     from .manager import TimelapseManager
 
-_BASE_SCHEMA = vol.Schema({vol.Required(ATTR_CONFIG_ENTRY_ID): cv.string})
+_BASE_SCHEMA = vol.Schema({vol.Required(ATTR_DEVICE_ID): cv.string})
 _STOP_SCHEMA = _BASE_SCHEMA.extend(
     {vol.Optional(ATTR_RENDER, default=True): cv.boolean}
 )
 
 
 def _get_manager(hass: HomeAssistant, call: ServiceCall) -> TimelapseManager:
-    entry_id = call.data[ATTR_CONFIG_ENTRY_ID]
-    entry = hass.config_entries.async_get_entry(entry_id)
-    if entry is None or entry.domain != DOMAIN:
+    device_id = call.data[ATTR_DEVICE_ID]
+    device = dr.async_get(hass).async_get(device_id)
+    if device is None:
         raise ServiceValidationError(
             translation_domain=DOMAIN,
-            translation_key="entry_not_found",
-            translation_placeholders={"entry_id": entry_id},
+            translation_key="device_not_found",
+            translation_placeholders={"device_id": device_id},
         )
-    if entry.state is not ConfigEntryState.LOADED:
-        raise ServiceValidationError(
-            translation_domain=DOMAIN,
-            translation_key="entry_not_loaded",
-            translation_placeholders={"title": entry.title},
-        )
-    return entry.runtime_data
+    for entry_id, subentry_ids in device.config_entries_subentries.items():
+        entry = hass.config_entries.async_get_entry(entry_id)
+        if entry is None or entry.domain != DOMAIN:
+            continue
+        if entry.state is not ConfigEntryState.LOADED:
+            raise ServiceValidationError(
+                translation_domain=DOMAIN,
+                translation_key="entry_not_loaded",
+                translation_placeholders={"title": entry.title},
+            )
+        for subentry_id in subentry_ids:
+            if subentry_id and (manager := entry.runtime_data.get(subentry_id)):
+                return manager
+    raise ServiceValidationError(
+        translation_domain=DOMAIN,
+        translation_key="device_not_found",
+        translation_placeholders={"device_id": device_id},
+    )
 
 
 @callback

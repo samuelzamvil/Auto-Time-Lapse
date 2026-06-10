@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from .const import SessionState
 from .entity import AutoTimeLapseEntity
@@ -20,21 +20,22 @@ if TYPE_CHECKING:
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: AutoTimeLapseConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
-    """Set up the profile sensors."""
-    manager = entry.runtime_data
-    async_add_entities(
-        [
-            TimelapseStatusSensor(manager),
-            TimelapseFrameCountSensor(manager),
-            TimelapseLastVideoSensor(manager),
-        ]
-    )
+    """Set up sensors per trigger subentry."""
+    for subentry_id, manager in entry.runtime_data.items():
+        async_add_entities(
+            [
+                TimelapseStatusSensor(manager),
+                TimelapseFrameCountSensor(manager),
+                TimelapseLastVideoSensor(manager),
+            ],
+            config_subentry_id=subentry_id,
+        )
 
 
 class TimelapseStatusSensor(AutoTimeLapseEntity, SensorEntity):
-    """Current state of the profile: idle, capturing or rendering."""
+    """Current state of the trigger profile: idle, capturing or rendering."""
 
     _attr_device_class = SensorDeviceClass.ENUM
     _attr_options = [state.value for state in SessionState]

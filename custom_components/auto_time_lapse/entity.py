@@ -10,20 +10,21 @@ from .manager import TimelapseManager
 
 
 class AutoTimeLapseEntity(Entity):
-    """Entity tied to a timelapse profile, updated by manager pushes."""
+    """Entity tied to a trigger profile, updated by manager pushes."""
 
     _attr_has_entity_name = True
     _attr_should_poll = False
 
     def __init__(self, manager: TimelapseManager, key: str) -> None:
         self._manager = manager
-        entry = manager.entry
-        self._attr_unique_id = f"{entry.entry_id}_{key}"
+        subentry = manager.subentry
+        self._attr_unique_id = f"{subentry.subentry_id}_{key}"
         self._attr_translation_key = key
         self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, entry.entry_id)},
-            name=entry.title,
+            identifiers={(DOMAIN, subentry.subentry_id)},
+            name=subentry.title,
             manufacturer="Auto Time Lapse",
+            model=f"{manager.trigger_mode.value.capitalize()} trigger",
             entry_type=DeviceEntryType.SERVICE,
         )
 

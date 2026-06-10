@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from .entity import AutoTimeLapseEntity
 from .manager import TimelapseManager
@@ -18,10 +18,13 @@ if TYPE_CHECKING:
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: AutoTimeLapseConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
-    """Set up the capture switch."""
-    async_add_entities([TimelapseCaptureSwitch(entry.runtime_data)])
+    """Set up a capture switch per trigger subentry."""
+    for subentry_id, manager in entry.runtime_data.items():
+        async_add_entities(
+            [TimelapseCaptureSwitch(manager)], config_subentry_id=subentry_id
+        )
 
 
 class TimelapseCaptureSwitch(AutoTimeLapseEntity, SwitchEntity):

@@ -2,72 +2,114 @@
   "config": {
     "step": {
       "user": {
-        "title": "Create a timelapse profile",
+        "title": "Add a camera",
         "data": {
-          "name": "Name",
-          "camera_entity": "Camera",
-          "interval": "Capture interval",
-          "output_fps": "Video frame rate (FPS)",
-          "output_dir": "Output directory",
-          "filename_pattern": "Filename pattern",
-          "keep_frames": "Keep frames after rendering",
-          "schedule_enabled": "Enable daily schedule",
-          "schedule_start": "Daily start time",
-          "schedule_end": "Daily end time",
-          "watch_entity": "Watch entity"
+          "camera_entity": "Camera"
         },
         "data_description": {
-          "name": "Used for the device name and the '{name}' filename placeholder.",
-          "camera_entity": "Camera to capture snapshots from.",
-          "interval": "Seconds between snapshots while capturing.",
-          "output_dir": "Folder for finished videos, created automatically if it does not exist (for example /media/timelapses). Leave empty for the default media folder. Anything under /media shows up in the Media Browser, including NAS shares added via Settings > System > Storage. Paths outside a media folder must be listed in allowlist_external_dirs.",
-          "filename_pattern": "Supports '{name}', '{timestamp}' and '{entry_id}' placeholders.",
-          "keep_frames": "Keep the individual snapshot frames on disk after the video is rendered.",
-          "schedule_enabled": "Capture every day between the start and end times; the video is rendered when the window ends. Overnight windows (e.g. 22:00 to 06:00) are supported.",
-          "watch_entity": "Optional entity to watch: capture starts when it turns on and stops (and renders) when it turns off."
+          "camera_entity": "Camera to capture snapshots from. After adding it, use 'Add trigger' on the integration page to create one or more timelapse triggers for it."
         }
       }
-    },
-    "error": {
-      "path_not_allowed": "This path is not absolute or not allowed. Add it to allowlist_external_dirs or use a media folder.",
-      "schedule_times_required": "Set both a start and an end time when the schedule is enabled.",
-      "schedule_start_equals_end": "Start and end time must be different."
     },
     "abort": {
-      "already_configured": "This profile is already configured."
+      "already_configured": "This camera is already set up. Add another trigger to the existing entry instead."
     }
   },
-  "options": {
-    "step": {
-      "init": {
-        "title": "Timelapse profile options",
-        "data": {
-          "camera_entity": "Camera",
-          "interval": "Capture interval",
-          "output_fps": "Video frame rate (FPS)",
-          "output_dir": "Output directory",
-          "filename_pattern": "Filename pattern",
-          "keep_frames": "Keep frames after rendering",
-          "schedule_enabled": "Enable daily schedule",
-          "schedule_start": "Daily start time",
-          "schedule_end": "Daily end time",
-          "watch_entity": "Watch entity"
+  "config_subentries": {
+    "trigger": {
+      "entry_type": "Trigger",
+      "initiate_flow": {
+        "user": "Add trigger",
+        "reconfigure": "Reconfigure trigger"
+      },
+      "step": {
+        "user": {
+          "title": "Add trigger",
+          "data": {
+            "name": "Name",
+            "trigger_mode": "Trigger mode",
+            "interval": "Capture interval",
+            "output_fps": "Video frame rate (FPS)",
+            "output_dir": "Output directory",
+            "filename_pattern": "Filename pattern",
+            "keep_frames": "Keep frames after rendering"
+          },
+          "data_description": {
+            "name": "Used for the device name and the '{name}' filename placeholder.",
+            "trigger_mode": "Manual: start and stop with the switch or services. Daily time window: capture between two times every day. Entity state watch: capture while another entity is in chosen states.",
+            "interval": "Seconds between snapshots while capturing.",
+            "output_dir": "Folder for finished videos, created automatically if it does not exist (for example /media/timelapses). Leave empty for the default media folder. Anything under /media shows up in the Media Browser, including NAS shares added via Settings > System > Storage. Paths outside a media folder must be listed in allowlist_external_dirs.",
+            "filename_pattern": "Supports '{name}', '{timestamp}' and '{entry_id}' placeholders.",
+            "keep_frames": "Keep the individual snapshot frames on disk after the video is rendered."
+          }
         },
-        "data_description": {
-          "camera_entity": "Camera to capture snapshots from.",
-          "interval": "Seconds between snapshots while capturing.",
-          "output_dir": "Folder for finished videos, created automatically if it does not exist (for example /media/timelapses). Leave empty for the default media folder. Anything under /media shows up in the Media Browser, including NAS shares added via Settings > System > Storage. Paths outside a media folder must be listed in allowlist_external_dirs.",
-          "filename_pattern": "Supports '{name}', '{timestamp}' and '{entry_id}' placeholders.",
-          "keep_frames": "Keep the individual snapshot frames on disk after the video is rendered.",
-          "schedule_enabled": "Capture every day between the start and end times; the video is rendered when the window ends. Overnight windows (e.g. 22:00 to 06:00) are supported.",
-          "watch_entity": "Optional entity to watch: capture starts when it turns on and stops (and renders) when it turns off."
+        "reconfigure": {
+          "title": "Reconfigure trigger",
+          "data": {
+            "name": "Name",
+            "trigger_mode": "Trigger mode",
+            "interval": "Capture interval",
+            "output_fps": "Video frame rate (FPS)",
+            "output_dir": "Output directory",
+            "filename_pattern": "Filename pattern",
+            "keep_frames": "Keep frames after rendering"
+          },
+          "data_description": {
+            "name": "Used for the device name and the '{name}' filename placeholder.",
+            "trigger_mode": "Manual: start and stop with the switch or services. Daily time window: capture between two times every day. Entity state watch: capture while another entity is in chosen states.",
+            "interval": "Seconds between snapshots while capturing.",
+            "output_dir": "Folder for finished videos, created automatically if it does not exist (for example /media/timelapses). Leave empty for the default media folder. Anything under /media shows up in the Media Browser, including NAS shares added via Settings > System > Storage. Paths outside a media folder must be listed in allowlist_external_dirs.",
+            "filename_pattern": "Supports '{name}', '{timestamp}' and '{entry_id}' placeholders.",
+            "keep_frames": "Keep the individual snapshot frames on disk after the video is rendered."
+          }
+        },
+        "schedule": {
+          "title": "Daily time window",
+          "data": {
+            "schedule_start": "Start time",
+            "schedule_end": "End time"
+          },
+          "data_description": {
+            "schedule_start": "Capture starts at this time every day.",
+            "schedule_end": "Capture stops and the video is rendered at this time. Overnight windows (for example 22:00 to 06:00) are supported."
+          }
+        },
+        "watch": {
+          "title": "Entity to watch",
+          "data": {
+            "watch_entity": "Entity"
+          },
+          "data_description": {
+            "watch_entity": "The entity that drives the capture, for example a 3D printer status sensor or a motion sensor. You pick its active states in the next step."
+          }
+        },
+        "watch_states": {
+          "title": "Active states",
+          "data": {
+            "watch_states": "Active states"
+          },
+          "data_description": {
+            "watch_states": "Capture runs while the entity is in any of these states. When it leaves them (including becoming unavailable), the capture stops and the video is rendered."
+          }
         }
+      },
+      "error": {
+        "path_not_allowed": "This path is not absolute or not allowed. Add it to allowlist_external_dirs or use a media folder.",
+        "schedule_start_equals_end": "Start and end time must be different.",
+        "states_required": "Select at least one state."
+      },
+      "abort": {
+        "reconfigure_successful": "Trigger updated."
       }
-    },
-    "error": {
-      "path_not_allowed": "This path is not absolute or not allowed. Add it to allowlist_external_dirs or use a media folder.",
-      "schedule_times_required": "Set both a start and an end time when the schedule is enabled.",
-      "schedule_start_equals_end": "Start and end time must be different."
+    }
+  },
+  "selector": {
+    "trigger_mode": {
+      "options": {
+        "manual": "Manual (switch and services)",
+        "schedule": "Daily time window",
+        "watch": "Entity state watch"
+      }
     }
   },
   "entity": {
@@ -96,11 +138,11 @@
   "services": {
     "start": {
       "name": "Start capture",
-      "description": "Starts a timelapse capture session for a profile.",
+      "description": "Starts a timelapse capture session for a trigger.",
       "fields": {
-        "config_entry_id": {
-          "name": "Profile",
-          "description": "The timelapse profile to start."
+        "device_id": {
+          "name": "Trigger",
+          "description": "The timelapse trigger to start."
         }
       }
     },
@@ -108,9 +150,9 @@
       "name": "Stop capture",
       "description": "Stops the capture session and renders the timelapse video.",
       "fields": {
-        "config_entry_id": {
-          "name": "Profile",
-          "description": "The timelapse profile to stop."
+        "device_id": {
+          "name": "Trigger",
+          "description": "The timelapse trigger to stop."
         },
         "render": {
           "name": "Render video",
@@ -122,9 +164,9 @@
       "name": "Render again",
       "description": "Renders the most recent retained frame set again (kept frames or a failed render).",
       "fields": {
-        "config_entry_id": {
-          "name": "Profile",
-          "description": "The timelapse profile to render."
+        "device_id": {
+          "name": "Trigger",
+          "description": "The timelapse trigger to render."
         }
       }
     },
@@ -132,19 +174,19 @@
       "name": "Cancel capture",
       "description": "Aborts the capture session and discards its frames without rendering.",
       "fields": {
-        "config_entry_id": {
-          "name": "Profile",
-          "description": "The timelapse profile to cancel."
+        "device_id": {
+          "name": "Trigger",
+          "description": "The timelapse trigger to cancel."
         }
       }
     }
   },
   "exceptions": {
-    "entry_not_found": {
-      "message": "No Auto Time Lapse profile found with config entry id {entry_id}."
+    "device_not_found": {
+      "message": "No Auto Time Lapse trigger found for device {device_id}."
     },
     "entry_not_loaded": {
-      "message": "Auto Time Lapse profile {title} is not loaded."
+      "message": "Auto Time Lapse entry {title} is not loaded."
     },
     "no_frames": {
       "message": "There are no retained frames to render. Capture a session first, or enable 'keep frames'."
