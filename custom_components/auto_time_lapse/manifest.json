@@ -1,0 +1,14 @@
+{
+  "domain": "auto_time_lapse",
+  "name": "Auto Time Lapse",
+  "codeowners": ["@samuelzamvil"],
+  "config_flow": true,
+  "dependencies": ["camera", "ffmpeg"],
+  "documentation": "https://github.com/samuelzamvil/auto-time-lapse",
+  "integration_type": "service",
+  "iot_class": "calculated",
+  "issue_tracker": "https://github.com/samuelzamvil/auto-time-lapse/issues",
+  "loggers": ["custom_components.auto_time_lapse"],
+  "requirements": [],
+  "version": "0.1.0"
+}
