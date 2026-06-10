@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime, time, timedelta
 from functools import partial
 import logging
@@ -61,13 +63,37 @@ from .const import (
     OUTPUT_SUBDIR,
     SNAPSHOT_TIMEOUT,
     CaptureMode,
+    SessionPhase,
     SessionState,
     TriggerMode,
     ValueDirection,
 )
 from .renderer import RenderError, async_render_timelapse
+from .storage import SessionRecord, SessionStore, async_get_session_store
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _scan_existing_frames(session_dir: Path) -> int:
+    """Return the next frame index based on the frames already on disk."""
+    next_index = 0
+    for frame in session_dir.glob("frame_*.jpg"):
+        try:
+            index = int(frame.stem.removeprefix("frame_"))
+        except ValueError:
+            continue
+        next_index = max(next_index, index + 1)
+    return next_index
+
+
+@dataclass(slots=True)
+class ResumeInfo:
+    """An interrupted session found on disk at setup."""
+
+    session_dir: Path
+    frame_count: int
+    started_at: datetime | None
+    phase: SessionPhase
 
 
 class TimelapseManager:
@@ -94,6 +120,8 @@ class TimelapseManager:
         self._value_baseline: float | None = None
         self._unsubs: list[CALLBACK_TYPE] = []
         self._listeners: list[CALLBACK_TYPE] = []
+        self._store: SessionStore = async_get_session_store(hass)
+        self._resume_infos: list[ResumeInfo] = []
 
     # ------------------------------------------------------------------ options
 
@@ -204,8 +232,11 @@ class TimelapseManager:
     # ------------------------------------------------------------------ setup
 
     async def async_setup(self) -> None:
-        """Wire the trigger and clean up stale frames from previous runs."""
-        await self._async_cleanup_stale_frames()
+        """Wire the trigger; adopt interrupted sessions, clean stale frames."""
+        self._resume_infos = await self._async_load_resume_infos()
+        await self._async_cleanup_stale_frames(
+            keep={info.session_dir.name for info in self._resume_infos}
+        )
 
         options = self._options
         mode = self.trigger_mode
@@ -215,6 +246,43 @@ class TimelapseManager:
             watch_entity := options.get(CONF_WATCH_ENTITY)
         ):
             self._setup_watch(watch_entity)
+        else:
+            self._setup_manual()
+
+    async def _async_load_resume_infos(self) -> list[ResumeInfo]:
+        """Read persisted session records and match them to frames on disk."""
+        await self._store.async_load()
+        infos: list[ResumeInfo] = []
+        seen_capturing = False
+        for dir_name, record in self._store.records(
+            self.subentry.subentry_id
+        ).items():
+            session_dir = self._frames_base_dir / dir_name
+            if not await self.hass.async_add_executor_job(session_dir.is_dir):
+                _LOGGER.warning(
+                    "Frames of interrupted session %s for %s are gone; "
+                    "dropping its record",
+                    dir_name,
+                    self.title,
+                )
+                await self._store.async_remove(self.subentry.subentry_id, dir_name)
+                continue
+            frame_count = await self.hass.async_add_executor_job(
+                _scan_existing_frames, session_dir
+            )
+            phase = record.phase
+            if phase is SessionPhase.CAPTURING:
+                # Only one session can resume; render any extras.
+                if seen_capturing:
+                    phase = SessionPhase.PENDING_RENDER
+                seen_capturing = True
+            started_at = (
+                dt_util.parse_datetime(record.started_at)
+                if record.started_at
+                else None
+            )
+            infos.append(ResumeInfo(session_dir, frame_count, started_at, phase))
+        return infos
 
     def _setup_schedule(self, options: dict) -> None:
         start_t = dt_util.parse_time(options.get(CONF_SCHEDULE_START) or "")
@@ -226,6 +294,8 @@ class TimelapseManager:
                 options.get(CONF_SCHEDULE_START),
                 options.get(CONF_SCHEDULE_END),
             )
+            # Still salvage any session interrupted by a restart.
+            self._setup_initial_check(lambda: False)
             return
         self._unsubs.append(
             async_track_time_change(
@@ -246,13 +316,11 @@ class TimelapseManager:
             )
         )
 
-        # If we load mid-window (HA restart or entry reload), start right away.
-        @callback
-        def _initial_check() -> None:
-            if self._is_in_window(start_t, end_t, dt_util.now().time()):
-                self.hass.async_create_task(self.async_start())
-
-        self._defer_until_running(_initial_check)
+        # If we load mid-window (HA restart or entry reload), resume an
+        # interrupted session or start right away.
+        self._setup_initial_check(
+            lambda: self._is_in_window(start_t, end_t, dt_util.now().time())
+        )
 
     def _setup_watch(self, watch_entity: str) -> None:
         self._unsubs.append(
@@ -262,14 +330,55 @@ class TimelapseManager:
         )
 
         # If the entity is already active (e.g. print running at HA restart),
-        # start right away.
+        # resume an interrupted session or start right away.
+        def _is_active() -> bool:
+            state = self.hass.states.get(watch_entity)
+            return state is not None and state.state in self.watch_states
+
+        self._setup_initial_check(_is_active)
+
+    def _setup_manual(self) -> None:
+        # A manual session only needs a startup check when one was interrupted.
+        if not self._resume_infos:
+            return
+
+        def _was_capturing() -> bool:
+            return any(
+                info.phase is SessionPhase.CAPTURING for info in self._resume_infos
+            )
+
+        self._setup_initial_check(_was_capturing)
+
+    @callback
+    def _setup_initial_check(self, conditions_active: Callable[[], bool]) -> None:
+        """Run the resume/salvage/start decision once HA is running."""
+
         @callback
         def _initial_check() -> None:
-            state = self.hass.states.get(watch_entity)
-            if state is not None and state.state in self.watch_states:
-                self.hass.async_create_task(self.async_start())
+            self.hass.async_create_task(
+                self._async_initial_check(conditions_active=conditions_active())
+            )
 
         self._defer_until_running(_initial_check)
+
+    async def _async_initial_check(self, *, conditions_active: bool) -> None:
+        """Resume, salvage, or freshly start sessions at startup."""
+        infos, self._resume_infos = self._resume_infos, []
+        resumable: ResumeInfo | None = None
+        for info in infos:
+            if (
+                resumable is None
+                and info.phase is SessionPhase.CAPTURING
+                and conditions_active
+                and not self._capturing
+            ):
+                resumable = info
+            else:
+                await self._async_salvage(info)
+        if resumable is not None:
+            await self.async_resume(resumable)
+        elif conditions_active and not self._capturing:
+            await self.async_start()
 
     @callback
     def _defer_until_running(self, check: CALLBACK_TYPE) -> None:
@@ -295,7 +404,7 @@ class TimelapseManager:
         # Overnight window, e.g. 22:00 -> 06:00.
         return now >= start or now < end
 
-    async def _async_cleanup_stale_frames(self) -> None:
+    async def _async_cleanup_stale_frames(self, keep: set[str]) -> None:
         if self.keep_frames:
             return
         base = self._frames_base_dir
@@ -305,7 +414,7 @@ class TimelapseManager:
                 return 0
             removed = 0
             for child in base.iterdir():
-                if child.is_dir():
+                if child.is_dir() and child.name not in keep:
                     shutil.rmtree(child, ignore_errors=True)
                     removed += 1
             return removed
@@ -319,10 +428,11 @@ class TimelapseManager:
             )
 
     async def async_unload(self) -> None:
-        """Tear down triggers; abandon any running capture session."""
+        """Tear down triggers; a running session resumes at the next setup."""
         if self._capturing:
             _LOGGER.info(
-                "Unloading %s while capturing; abandoning current session",
+                "Unloading %s while capturing; the session will resume after "
+                "restart or reload",
                 self.title,
             )
         self._cancel_capture_listener()
@@ -373,6 +483,30 @@ class TimelapseManager:
         self.failed_frame_count = 0
         self.session_started_at = dt_util.now()
         self._capturing = True
+        await self._async_persist(session_dir, SessionPhase.CAPTURING)
+        await self._begin_capture()
+
+    async def async_resume(self, info: ResumeInfo) -> None:
+        """Continue a capture session that a restart interrupted."""
+        if self._capturing:
+            _LOGGER.debug("%s is already capturing", self.title)
+            return
+        self._session_dir = info.session_dir
+        self.frame_count = info.frame_count
+        self.failed_frame_count = 0
+        self.session_started_at = info.started_at or dt_util.now()
+        self._capturing = True
+        _LOGGER.info(
+            "Resuming interrupted timelapse session for %s with %d existing "
+            "frame(s)",
+            self.title,
+            info.frame_count,
+        )
+        await self._async_persist(info.session_dir, SessionPhase.CAPTURING)
+        await self._begin_capture()
+
+    async def _begin_capture(self) -> None:
+        """Wire the frame cadence for the just-started session."""
         if self.capture_mode is CaptureMode.VALUE_CHANGE and self.value_entity:
             self._value_baseline = self._current_value()
             self._unsub_capture = async_track_state_change_event(
@@ -411,6 +545,7 @@ class TimelapseManager:
         self._capturing = False
         session_dir = self._session_dir
         frames = self.frame_count
+        started_at = self.session_started_at
         self._session_dir = None
         self.session_started_at = None
         _LOGGER.info(
@@ -420,12 +555,21 @@ class TimelapseManager:
         )
         if session_dir is not None:
             if render and frames > 0:
+                await self._async_persist(
+                    session_dir, SessionPhase.PENDING_RENDER, started_at
+                )
                 self.hass.async_create_task(self._async_render(session_dir, frames))
             elif frames > 0 and self.keep_frames:
                 self._last_session_dir = session_dir
                 self._last_session_frames = frames
+                await self._store.async_remove(
+                    self.subentry.subentry_id, session_dir.name
+                )
             else:
                 await self._async_remove_dir(session_dir)
+                await self._store.async_remove(
+                    self.subentry.subentry_id, session_dir.name
+                )
         self._notify()
 
     async def async_cancel(self) -> None:
@@ -439,8 +583,51 @@ class TimelapseManager:
         self.session_started_at = None
         if session_dir is not None:
             await self._async_remove_dir(session_dir)
+            await self._store.async_remove(
+                self.subentry.subentry_id, session_dir.name
+            )
         _LOGGER.info("Cancelled timelapse capture for %s", self.title)
         self._notify()
+
+    async def _async_persist(
+        self,
+        session_dir: Path,
+        phase: SessionPhase,
+        started_at: datetime | None = None,
+    ) -> None:
+        """Record the session so it survives a crash or restart."""
+        started = started_at or self.session_started_at
+        await self._store.async_set(
+            self.subentry.subentry_id,
+            session_dir.name,
+            SessionRecord(
+                entry_id=self.entry.entry_id,
+                started_at=started.isoformat() if started else None,
+                phase=phase,
+            ),
+        )
+
+    async def _async_salvage(self, info: ResumeInfo) -> None:
+        """Render the frames of a session that cannot continue."""
+        if info.frame_count == 0:
+            await self._async_remove_dir(info.session_dir)
+            await self._store.async_remove(
+                self.subentry.subentry_id, info.session_dir.name
+            )
+            return
+        _LOGGER.info(
+            "Rendering %d frame(s) of an interrupted session for %s",
+            info.frame_count,
+            self.title,
+        )
+        await self._async_persist(
+            info.session_dir, SessionPhase.PENDING_RENDER, info.started_at
+        )
+        self._last_session_dir = info.session_dir
+        self._last_session_frames = info.frame_count
+        self.hass.async_create_task(
+            self._async_render(info.session_dir, info.frame_count)
+        )
 
     async def async_rerender(self) -> None:
         """Render the most recent retained frame set again."""
@@ -629,6 +816,9 @@ class TimelapseManager:
                     if self._last_session_dir == session_dir:
                         self._last_session_dir = None
                         self._last_session_frames = 0
+                await self._store.async_remove(
+                    self.subentry.subentry_id, session_dir.name
+                )
             finally:
                 self._rendering = False
                 self._notify()

@@ -61,6 +61,13 @@ class SessionState(StrEnum):
     RENDERING = "rendering"
 
 
+class SessionPhase(StrEnum):
+    """Lifecycle phase of a persisted session record."""
+
+    CAPTURING = "capturing"
+    PENDING_RENDER = "pending_render"
+
+
 class TriggerMode(StrEnum):
     """How a capture session is started and stopped."""
 

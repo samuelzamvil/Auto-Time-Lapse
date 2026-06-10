@@ -11,6 +11,7 @@ from homeassistant.helpers.typing import ConfigType
 from .const import DOMAIN, SUBENTRY_TYPE_TRIGGER
 from .manager import TimelapseManager
 from .services import async_setup_services
+from .storage import async_get_session_store
 
 type AutoTimeLapseConfigEntry = ConfigEntry[dict[str, TimelapseManager]]
 
@@ -37,6 +38,11 @@ async def async_setup_entry(
         await manager.async_setup()
         managers[subentry.subentry_id] = manager
     entry.runtime_data = managers
+    # Drop session records of triggers that were deleted while a session ran.
+    store = async_get_session_store(hass)
+    await store.async_load()
+    for subentry_id in store.subentry_ids_for_entry(entry.entry_id) - set(managers):
+        await store.async_remove_subentry(subentry_id)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
     return True
@@ -47,6 +53,15 @@ async def _async_update_listener(
 ) -> None:
     """Reload the entry when subentries are added, changed, or removed."""
     await hass.config_entries.async_reload(entry.entry_id)
+
+
+async def async_remove_entry(
+    hass: HomeAssistant, entry: AutoTimeLapseConfigEntry
+) -> None:
+    """Drop persisted session records when a camera entry is removed."""
+    store = async_get_session_store(hass)
+    await store.async_load()
+    await store.async_remove_entry(entry.entry_id)
 
 
 async def async_unload_entry(
