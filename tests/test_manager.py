@@ -10,6 +10,7 @@ from homeassistant.components.camera import Image
 from homeassistant.const import STATE_OFF, STATE_ON, STATE_UNAVAILABLE
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.util import dt as dt_util
 import pytest
 from pytest_homeassistant_custom_component.common import (
@@ -20,6 +21,9 @@ from pytest_homeassistant_custom_component.common import (
 from custom_components.auto_time_lapse.const import (
     ATTR_DEVICE_ID,
     CONF_CAPTURE_MODE,
+    CONF_DURATION_ENTITY,
+    CONF_FALLBACK_INTERVAL,
+    CONF_TARGET_LENGTH,
     CONF_TRIGGER_MODE,
     CONF_VALUE_DELTA,
     CONF_VALUE_DIRECTION,
@@ -321,6 +325,98 @@ async def test_value_change_increase_rebaselines_on_reset(
     assert manager.frame_count == 1
 
     hass.states.async_set("sensor.current_layer", "1")
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert manager.frame_count == 2
+
+
+def _make_fit_entry(base_trigger_data, **overrides):
+    return make_entry(
+        base_trigger_data
+        | {
+            CONF_CAPTURE_MODE: CaptureMode.TIME_FIT.value,
+            CONF_DURATION_ENTITY: "sensor.print_duration",
+            CONF_TARGET_LENGTH: 2.0,
+            CONF_FALLBACK_INTERVAL: 5,
+        }
+        | overrides,
+        title="Fit Lapse",
+    )
+
+
+async def test_fit_length_cadence(
+    hass, base_trigger_data, mock_camera_image, mock_render
+):
+    """The interval is computed from the duration entity and frozen at start."""
+    # 600 s of print at 30 fps for a 2 s video -> one frame every 10 s.
+    entry = _make_fit_entry(base_trigger_data)
+    hass.states.async_set("sensor.print_duration", "600")
+    await setup_integration(hass, entry)
+    manager = get_manager(entry)
+    device_id = get_device_id(hass)
+
+    await hass.services.async_call(
+        DOMAIN, SERVICE_START, {ATTR_DEVICE_ID: device_id}, blocking=True
+    )
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert manager.frame_count == 1  # immediate first frame
+
+    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=11))
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert manager.frame_count == 2
+
+    # The interval is frozen at session start: a new (much longer) estimate
+    # mid-session does not slow the cadence down.
+    hass.states.async_set("sensor.print_duration", "60000")
+    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=22))
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert manager.frame_count == 3
+
+
+async def test_fit_length_falls_back_when_unreadable(
+    hass, base_trigger_data, mock_camera_image, mock_render
+):
+    """An unreadable duration entity falls back to the configured interval."""
+    entry = _make_fit_entry(base_trigger_data)
+    hass.states.async_set("sensor.print_duration", STATE_UNAVAILABLE)
+    await setup_integration(hass, entry)
+    manager = get_manager(entry)
+    device_id = get_device_id(hass)
+
+    await hass.services.async_call(
+        DOMAIN, SERVICE_START, {ATTR_DEVICE_ID: device_id}, blocking=True
+    )
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert manager.frame_count == 1
+
+    # The 5 s fallback is in effect (the fixed 60 s interval would not fire).
+    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=6))
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert manager.frame_count == 2
+
+
+async def test_fit_length_clamps_to_one_second(
+    hass, base_trigger_data, mock_camera_image, mock_render
+):
+    """A computed sub-second interval is clamped to one second."""
+    # 30 s of print at 30 fps for a 60 s video -> ~0.017 s, clamped to 1 s.
+    entry = _make_fit_entry(base_trigger_data, **{CONF_TARGET_LENGTH: 60.0})
+    hass.states.async_set("sensor.print_duration", "30")
+    await setup_integration(hass, entry)
+    manager = get_manager(entry)
+    device_id = get_device_id(hass)
+
+    with patch(
+        "custom_components.auto_time_lapse.manager.async_track_time_interval",
+        wraps=async_track_time_interval,
+    ) as track_interval:
+        await hass.services.async_call(
+            DOMAIN, SERVICE_START, {ATTR_DEVICE_ID: device_id}, blocking=True
+        )
+        await hass.async_block_till_done(wait_background_tasks=True)
+    assert manager.frame_count == 1
+    assert track_interval.call_args[0][2] == timedelta(seconds=1)
+
+    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=2))
     await hass.async_block_till_done(wait_background_tasks=True)
     assert manager.frame_count == 2
 
