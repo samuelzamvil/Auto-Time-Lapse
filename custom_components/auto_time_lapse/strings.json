@@ -1,0 +1,153 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Create a timelapse profile",
+        "data": {
+          "name": "Name",
+          "camera_entity": "Camera",
+          "interval": "Capture interval",
+          "output_fps": "Video frame rate (FPS)",
+          "output_dir": "Output directory",
+          "filename_pattern": "Filename pattern",
+          "keep_frames": "Keep frames after rendering",
+          "schedule_enabled": "Enable daily schedule",
+          "schedule_start": "Daily start time",
+          "schedule_end": "Daily end time",
+          "watch_entity": "Watch entity"
+        },
+        "data_description": {
+          "name": "Used for the device name and the {name} filename placeholder.",
+          "camera_entity": "Camera to capture snapshots from.",
+          "interval": "Seconds between snapshots while capturing.",
+          "output_dir": "Where finished videos are saved. Leave empty to use the media folder (visible in the Media Browser, including NAS network storage mounts). Custom paths must be in allowlist_external_dirs or a media dir.",
+          "filename_pattern": "Supports {name}, {timestamp} and {entry_id} placeholders.",
+          "keep_frames": "Keep the individual snapshot frames on disk after the video is rendered.",
+          "schedule_enabled": "Capture every day between the start and end times; the video is rendered when the window ends. Overnight windows (e.g. 22:00 to 06:00) are supported.",
+          "watch_entity": "Optional entity to watch: capture starts when it turns on and stops (and renders) when it turns off."
+        }
+      }
+    },
+    "error": {
+      "path_not_allowed": "This path is not absolute or not allowed. Add it to allowlist_external_dirs or use a media folder.",
+      "schedule_times_required": "Set both a start and an end time when the schedule is enabled.",
+      "schedule_start_equals_end": "Start and end time must be different."
+    },
+    "abort": {
+      "already_configured": "This profile is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Timelapse profile options",
+        "data": {
+          "camera_entity": "Camera",
+          "interval": "Capture interval",
+          "output_fps": "Video frame rate (FPS)",
+          "output_dir": "Output directory",
+          "filename_pattern": "Filename pattern",
+          "keep_frames": "Keep frames after rendering",
+          "schedule_enabled": "Enable daily schedule",
+          "schedule_start": "Daily start time",
+          "schedule_end": "Daily end time",
+          "watch_entity": "Watch entity"
+        },
+        "data_description": {
+          "camera_entity": "Camera to capture snapshots from.",
+          "interval": "Seconds between snapshots while capturing.",
+          "output_dir": "Where finished videos are saved. Leave empty to use the media folder (visible in the Media Browser, including NAS network storage mounts). Custom paths must be in allowlist_external_dirs or a media dir.",
+          "filename_pattern": "Supports {name}, {timestamp} and {entry_id} placeholders.",
+          "keep_frames": "Keep the individual snapshot frames on disk after the video is rendered.",
+          "schedule_enabled": "Capture every day between the start and end times; the video is rendered when the window ends. Overnight windows (e.g. 22:00 to 06:00) are supported.",
+          "watch_entity": "Optional entity to watch: capture starts when it turns on and stops (and renders) when it turns off."
+        }
+      }
+    },
+    "error": {
+      "path_not_allowed": "This path is not absolute or not allowed. Add it to allowlist_external_dirs or use a media folder.",
+      "schedule_times_required": "Set both a start and an end time when the schedule is enabled.",
+      "schedule_start_equals_end": "Start and end time must be different."
+    }
+  },
+  "entity": {
+    "switch": {
+      "capture": {
+        "name": "Capture"
+      }
+    },
+    "sensor": {
+      "status": {
+        "name": "Status",
+        "state": {
+          "idle": "Idle",
+          "capturing": "Capturing",
+          "rendering": "Rendering"
+        }
+      },
+      "frame_count": {
+        "name": "Frame count"
+      },
+      "last_video": {
+        "name": "Last video"
+      }
+    }
+  },
+  "services": {
+    "start": {
+      "name": "Start capture",
+      "description": "Starts a timelapse capture session for a profile.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Profile",
+          "description": "The timelapse profile to start."
+        }
+      }
+    },
+    "stop": {
+      "name": "Stop capture",
+      "description": "Stops the capture session and renders the timelapse video.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Profile",
+          "description": "The timelapse profile to stop."
+        },
+        "render": {
+          "name": "Render video",
+          "description": "Render the video after stopping. If disabled, frames are discarded unless 'keep frames' is enabled."
+        }
+      }
+    },
+    "render": {
+      "name": "Render again",
+      "description": "Renders the most recent retained frame set again (kept frames or a failed render).",
+      "fields": {
+        "config_entry_id": {
+          "name": "Profile",
+          "description": "The timelapse profile to render."
+        }
+      }
+    },
+    "cancel": {
+      "name": "Cancel capture",
+      "description": "Aborts the capture session and discards its frames without rendering.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Profile",
+          "description": "The timelapse profile to cancel."
+        }
+      }
+    }
+  },
+  "exceptions": {
+    "entry_not_found": {
+      "message": "No Auto Time Lapse profile found with config entry id {entry_id}."
+    },
+    "entry_not_loaded": {
+      "message": "Auto Time Lapse profile {title} is not loaded."
+    },
+    "no_frames": {
+      "message": "There are no retained frames to render. Capture a session first, or enable 'keep frames'."
+    }
+  }
+}
