@@ -14,12 +14,15 @@ from pytest_homeassistant_custom_component.common import (
 
 from custom_components.auto_time_lapse.const import (
     ATTR_DEVICE_ID,
+    CONF_END_BUFFER_AMOUNT,
+    CONF_END_BUFFER_MODE,
     CONF_TRIGGER_MODE,
     CONF_WATCH_ENTITY,
     DOMAIN,
     SERVICE_CANCEL,
     SERVICE_START,
     SERVICE_STOP,
+    EndBufferMode,
     SessionPhase,
     SessionState,
     TriggerMode,
@@ -228,6 +231,32 @@ async def test_watch_salvages_when_entity_inactive(
     assert _stored_records(hass_storage) == {}
     # Frames are cleaned after the successful salvage render.
     assert not session_dir.exists()
+
+
+async def test_restart_during_buffer_salvages(
+    hass, base_trigger_data, mock_camera_image, mock_render, hass_storage, tmp_path
+):
+    """The buffer does not survive a restart: the session is salvaged."""
+    session_dir = _seed_session(hass_storage, tmp_path, frames=2)
+    entry = make_entry(
+        base_trigger_data
+        | {
+            CONF_TRIGGER_MODE: TriggerMode.WATCH.value,
+            CONF_WATCH_ENTITY: "input_boolean.motion",
+            CONF_END_BUFFER_MODE: EndBufferMode.SECONDS.value,
+            CONF_END_BUFFER_AMOUNT: 300,
+        },
+        title="Watched",
+    )
+    # The entity is inactive at startup, as it would be mid-buffer.
+    hass.states.async_set("input_boolean.motion", "off")
+    await setup_integration(hass, entry)
+
+    manager = get_manager(entry)
+    assert manager.state is SessionState.IDLE
+    mock_render.assert_called_once()
+    assert mock_render.call_args.args[1] == session_dir
+    assert _stored_records(hass_storage) == {}
 
 
 async def test_pending_render_is_salvaged_not_resumed(

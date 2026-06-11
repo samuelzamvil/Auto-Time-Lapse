@@ -26,6 +26,10 @@ CONF_SCHEDULE_START = "schedule_start"
 CONF_SCHEDULE_END = "schedule_end"
 CONF_WATCH_ENTITY = "watch_entity"
 CONF_WATCH_STATES = "watch_states"
+CONF_END_BUFFER_MODE = "end_buffer_mode"
+CONF_END_BUFFER_AMOUNT = "end_buffer_amount"
+CONF_END_BUFFER_INTERVAL = "end_buffer_interval"
+CONF_END_BUFFER_RETRIGGER = "end_buffer_retrigger"
 
 DEFAULT_INTERVAL = 60
 DEFAULT_TARGET_LENGTH = 30.0
@@ -34,6 +38,13 @@ DEFAULT_VALUE_DELTA = 1.0
 DEFAULT_OUTPUT_FPS = 30
 DEFAULT_FILENAME_PATTERN = "{name}_{timestamp}.mp4"
 DEFAULT_KEEP_FRAMES = False
+DEFAULT_END_BUFFER_AMOUNT = 10
+
+# Frames-mode buffer watchdog: end the buffer after
+# amount * interval * factor seconds (at least the minimum) even if the
+# camera stops delivering frames.
+BUFFER_SAFETY_FACTOR = 3
+BUFFER_SAFETY_MIN = 60.0
 
 SERVICE_START = "start"
 SERVICE_STOP = "stop"
@@ -58,6 +69,7 @@ class SessionState(StrEnum):
 
     IDLE = "idle"
     CAPTURING = "capturing"
+    BUFFERING = "buffering"
     RENDERING = "rendering"
 
 
@@ -90,3 +102,18 @@ class ValueDirection(StrEnum):
     ANY = "any"
     INCREASE = "increase"
     DECREASE = "decrease"
+
+
+class EndBufferMode(StrEnum):
+    """How long capture continues after the trigger period ends."""
+
+    OFF = "off"
+    FRAMES = "frames"
+    SECONDS = "seconds"
+
+
+class BufferRetrigger(StrEnum):
+    """What a re-activated trigger does to a running end buffer."""
+
+    RESUME = "resume"
+    FINISH = "finish"

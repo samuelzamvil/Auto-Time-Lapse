@@ -24,6 +24,7 @@ from homeassistant.core import (
 )
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers.event import (
+    async_call_later,
     async_track_state_change_event,
     async_track_time_change,
     async_track_time_interval,
@@ -31,9 +32,15 @@ from homeassistant.helpers.event import (
 from homeassistant.util import dt as dt_util, slugify
 
 from .const import (
+    BUFFER_SAFETY_FACTOR,
+    BUFFER_SAFETY_MIN,
     CONF_CAMERA_ENTITY,
     CONF_CAPTURE_MODE,
     CONF_DURATION_ENTITY,
+    CONF_END_BUFFER_AMOUNT,
+    CONF_END_BUFFER_INTERVAL,
+    CONF_END_BUFFER_MODE,
+    CONF_END_BUFFER_RETRIGGER,
     CONF_FALLBACK_INTERVAL,
     CONF_FILENAME_PATTERN,
     CONF_INTERVAL,
@@ -49,6 +56,7 @@ from .const import (
     CONF_VALUE_ENTITY,
     CONF_WATCH_ENTITY,
     CONF_WATCH_STATES,
+    DEFAULT_END_BUFFER_AMOUNT,
     DEFAULT_FALLBACK_INTERVAL,
     DEFAULT_FILENAME_PATTERN,
     DEFAULT_INTERVAL,
@@ -62,7 +70,9 @@ from .const import (
     MAX_LOGGED_FAILURES,
     OUTPUT_SUBDIR,
     SNAPSHOT_TIMEOUT,
+    BufferRetrigger,
     CaptureMode,
+    EndBufferMode,
     SessionPhase,
     SessionState,
     TriggerMode,
@@ -118,6 +128,11 @@ class TimelapseManager:
         self._render_lock = asyncio.Lock()
         self._unsub_capture: CALLBACK_TYPE | None = None
         self._value_baseline: float | None = None
+        self._buffering = False
+        self._buffer_frames_remaining: int | None = None
+        self._unsub_buffer_deadline: CALLBACK_TYPE | None = None
+        self._buffer_cadence_rewired = False
+        self._session_capture_seconds: float | None = None
         self._unsubs: list[CALLBACK_TYPE] = []
         self._listeners: list[CALLBACK_TYPE] = []
         self._store: SessionStore = async_get_session_store(hass)
@@ -201,8 +216,40 @@ class TimelapseManager:
         return list(self._options.get(CONF_WATCH_STATES) or [STATE_ON])
 
     @property
+    def end_buffer_mode(self) -> EndBufferMode:
+        try:
+            return EndBufferMode(
+                self._options.get(CONF_END_BUFFER_MODE, EndBufferMode.OFF)
+            )
+        except ValueError:
+            return EndBufferMode.OFF
+
+    @property
+    def end_buffer_amount(self) -> int:
+        return int(
+            self._options.get(CONF_END_BUFFER_AMOUNT, DEFAULT_END_BUFFER_AMOUNT)
+        )
+
+    @property
+    def end_buffer_interval(self) -> int | None:
+        """Snapshot interval during the buffer; None keeps the session cadence."""
+        value = self._options.get(CONF_END_BUFFER_INTERVAL)
+        return int(value) if value else None
+
+    @property
+    def end_buffer_retrigger(self) -> BufferRetrigger:
+        try:
+            return BufferRetrigger(
+                self._options.get(CONF_END_BUFFER_RETRIGGER, BufferRetrigger.RESUME)
+            )
+        except ValueError:
+            return BufferRetrigger.RESUME
+
+    @property
     def state(self) -> SessionState:
         if self._capturing:
+            if self._buffering:
+                return SessionState.BUFFERING
             return SessionState.CAPTURING
         if self._rendering:
             return SessionState.RENDERING
@@ -435,6 +482,7 @@ class TimelapseManager:
                 "restart or reload",
                 self.title,
             )
+        self._clear_buffer_state()
         self._cancel_capture_listener()
         self._capturing = False
         self._session_dir = None
@@ -446,10 +494,10 @@ class TimelapseManager:
     # ------------------------------------------------------------------ triggers
 
     async def _async_on_window_start(self, now: datetime) -> None:
-        await self.async_start()
+        await self._async_trigger_start()
 
     async def _async_on_window_end(self, now: datetime) -> None:
-        await self.async_stop(render=True)
+        await self._async_trigger_stop()
 
     @callback
     def _async_on_watch_change(self, event: Event[EventStateChangedData]) -> None:
@@ -459,11 +507,137 @@ class TimelapseManager:
         new_active = new_state is not None and new_state.state in active_states
         old_active = old_state is not None and old_state.state in active_states
         if new_active and not old_active:
-            self.hass.async_create_task(self.async_start())
+            self.hass.async_create_task(self._async_trigger_start())
         elif old_active and not new_active:
             # Includes the entity being removed or going unavailable/unknown:
             # the session ends and the video is completed.
-            self.hass.async_create_task(self.async_stop(render=True))
+            self.hass.async_create_task(self._async_trigger_stop())
+
+    async def _async_trigger_start(self) -> None:
+        """Handle the trigger condition becoming active."""
+        if self._buffering:
+            if self.end_buffer_retrigger is BufferRetrigger.RESUME:
+                self._async_resume_from_buffer()
+            # FINISH: _async_finish_buffer re-checks the live condition when
+            # the buffer ends and starts a fresh session then.
+            return
+        await self.async_start()
+
+    async def _async_trigger_stop(self) -> None:
+        """Handle the trigger condition becoming inactive."""
+        if not self._capturing or self._buffering:
+            return
+        if self.end_buffer_mode is EndBufferMode.OFF:
+            await self.async_stop(render=True)
+            return
+        self._begin_buffer()
+
+    def _trigger_conditions_active(self) -> bool:
+        """Return whether the trigger condition currently holds."""
+        options = self._options
+        if self.trigger_mode is TriggerMode.WATCH:
+            if not (entity := options.get(CONF_WATCH_ENTITY)):
+                return False
+            state = self.hass.states.get(entity)
+            return state is not None and state.state in self.watch_states
+        if self.trigger_mode is TriggerMode.SCHEDULE:
+            start_t = dt_util.parse_time(options.get(CONF_SCHEDULE_START) or "")
+            end_t = dt_util.parse_time(options.get(CONF_SCHEDULE_END) or "")
+            if start_t is None or end_t is None or start_t == end_t:
+                return False
+            return self._is_in_window(start_t, end_t, dt_util.now().time())
+        return False
+
+    # ------------------------------------------------------------------ buffer
+
+    @callback
+    def _begin_buffer(self) -> None:
+        """Keep capturing past the trigger end for the configured buffer."""
+        self._buffering = True
+        override = self.end_buffer_interval
+        if override is not None or self.capture_mode is CaptureMode.VALUE_CHANGE:
+            # VALUE_CHANGE always goes time-based during the buffer: the
+            # watched value typically stops moving once the trigger ends.
+            # The config flow requires an override interval in that case;
+            # fall back to the plain interval defensively if it is missing.
+            seconds = float(override or self.interval)
+            self._cancel_capture_listener()
+            self._unsub_capture = async_track_time_interval(
+                self.hass, self._async_capture_frame, timedelta(seconds=seconds)
+            )
+            self._buffer_cadence_rewired = True
+        else:
+            seconds = self._session_capture_seconds or float(self.interval)
+        if self.end_buffer_mode is EndBufferMode.FRAMES:
+            self._buffer_frames_remaining = self.end_buffer_amount
+            # If the camera stops delivering, only failures arrive and the
+            # counter never reaches zero; end the buffer after a generous
+            # time budget instead of capturing forever.
+            budget = max(
+                self.end_buffer_amount * seconds * BUFFER_SAFETY_FACTOR,
+                BUFFER_SAFETY_MIN,
+            )
+            self._unsub_buffer_deadline = async_call_later(
+                self.hass, budget, self._async_on_buffer_deadline
+            )
+        else:
+            self._unsub_buffer_deadline = async_call_later(
+                self.hass,
+                float(self.end_buffer_amount),
+                self._async_on_buffer_deadline,
+            )
+        _LOGGER.info(
+            "Trigger ended for %s; buffering %d more %s",
+            self.title,
+            self.end_buffer_amount,
+            self.end_buffer_mode.value,
+        )
+        self._notify()
+
+    async def _async_on_buffer_deadline(self, now: datetime) -> None:
+        if (remaining := self._buffer_frames_remaining) is not None and remaining > 0:
+            _LOGGER.warning(
+                "Buffer for %s timed out with %d frame(s) outstanding; "
+                "ending it now",
+                self.title,
+                remaining,
+            )
+        await self._async_finish_buffer()
+
+    async def _async_finish_buffer(self) -> None:
+        """End the buffer: render, and restart if configured and re-triggered."""
+        if not self._buffering:
+            return
+        restart = (
+            self.end_buffer_retrigger is BufferRetrigger.FINISH
+            and self._trigger_conditions_active()
+        )
+        await self.async_stop(render=True)
+        if restart:
+            await self.async_start()
+
+    @callback
+    def _async_resume_from_buffer(self) -> None:
+        """Abort the buffer and continue capturing in the same session."""
+        rewired = self._buffer_cadence_rewired
+        self._clear_buffer_state()
+        if rewired:
+            self._cancel_capture_listener()
+            self._wire_capture_cadence()
+        _LOGGER.info(
+            "Trigger re-activated for %s; resuming capture in the same session",
+            self.title,
+        )
+        self._notify()
+
+    @callback
+    def _clear_buffer_state(self) -> None:
+        if self._unsub_buffer_deadline is not None:
+            self._unsub_buffer_deadline()
+            self._unsub_buffer_deadline = None
+        self._buffering = False
+        self._buffer_frames_remaining = None
+        self._buffer_cadence_rewired = False
 
     # ------------------------------------------------------------------ session
 
@@ -507,6 +681,14 @@ class TimelapseManager:
 
     async def _begin_capture(self) -> None:
         """Wire the frame cadence for the just-started session."""
+        self._session_capture_seconds = None
+        self._wire_capture_cadence()
+        self._notify()
+        await self._async_capture_frame()
+
+    @callback
+    def _wire_capture_cadence(self) -> None:
+        """Hook up the capture listener for the session's cadence."""
         if self.capture_mode is CaptureMode.VALUE_CHANGE and self.value_entity:
             self._value_baseline = self._current_value()
             self._unsub_capture = async_track_state_change_event(
@@ -522,9 +704,11 @@ class TimelapseManager:
                 self.value_direction.value,
             )
         else:
-            # The interval is computed once here and stays frozen for the
-            # whole session: the listener is only torn down at stop/cancel.
-            seconds = self._capture_interval_seconds()
+            # The interval is computed once and stays frozen for the whole
+            # session, including when capture is re-wired after a buffer.
+            if self._session_capture_seconds is None:
+                self._session_capture_seconds = self._capture_interval_seconds()
+            seconds = self._session_capture_seconds
             self._unsub_capture = async_track_time_interval(
                 self.hass, self._async_capture_frame, timedelta(seconds=seconds)
             )
@@ -534,15 +718,15 @@ class TimelapseManager:
                 self.camera_entity,
                 seconds,
             )
-        self._notify()
-        await self._async_capture_frame()
 
     async def async_stop(self, render: bool = True) -> None:
         """End the capture session, optionally rendering the video."""
         if not self._capturing:
             return
+        self._clear_buffer_state()
         self._cancel_capture_listener()
         self._capturing = False
+        self._session_capture_seconds = None
         session_dir = self._session_dir
         frames = self.frame_count
         started_at = self.session_started_at
@@ -576,8 +760,10 @@ class TimelapseManager:
         """Abort the capture session and discard its frames."""
         if not self._capturing:
             return
+        self._clear_buffer_state()
         self._cancel_capture_listener()
         self._capturing = False
+        self._session_capture_seconds = None
         session_dir = self._session_dir
         self._session_dir = None
         self.session_started_at = None
@@ -765,6 +951,12 @@ class TimelapseManager:
         path = session_dir / FRAME_FILENAME.format(index=self.frame_count)
         await self.hass.async_add_executor_job(path.write_bytes, image.content)
         self.frame_count += 1
+        if self._buffering and self._buffer_frames_remaining is not None:
+            self._buffer_frames_remaining -= 1
+            if self._buffer_frames_remaining <= 0:
+                self._notify()
+                await self._async_finish_buffer()
+                return
         self._notify()
 
     # ------------------------------------------------------------------ render
