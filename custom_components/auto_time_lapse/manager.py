@@ -312,6 +312,19 @@ class TimelapseManager:
         return self._capturing
 
     @property
+    def capture_interval(self) -> float | None:
+        """Seconds between snapshots currently in effect; None when not time-paced."""
+        if not self._capturing:
+            return None
+        if self._buffering and self._buffer_cadence_rewired:
+            return float(self.end_buffer_interval or self.interval)
+        if self._effective_value_change():
+            return None
+        if self.capture_mode is CaptureMode.CONDITIONAL:
+            return float(self.interval)
+        return self._session_capture_seconds
+
+    @property
     def media_content_id(self) -> str | None:
         """Media-source URI for the last video if it is inside a media dir."""
         if not self.last_video_path:
@@ -907,6 +920,7 @@ class TimelapseManager:
         )
         self._cancel_capture_listener()
         self._wire_capture_cadence()
+        self._notify()
 
     async def async_stop(self, render: bool = True) -> None:
         """End the capture session, optionally rendering the video."""

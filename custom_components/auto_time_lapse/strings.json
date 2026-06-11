@@ -275,6 +275,9 @@
       },
       "last_video": {
         "name": "Last video"
+      },
+      "capture_interval": {
+        "name": "Capture interval"
       }
     }
   },

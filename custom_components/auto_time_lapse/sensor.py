@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
-from homeassistant.const import EntityCategory
+from homeassistant.const import EntityCategory, UnitOfTime
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
@@ -29,6 +29,7 @@ async def async_setup_entry(
                 TimelapseStatusSensor(manager),
                 TimelapseFrameCountSensor(manager),
                 TimelapseLastVideoSensor(manager),
+                TimelapseCaptureIntervalSensor(manager),
             ],
             config_subentry_id=subentry_id,
         )
@@ -78,3 +79,19 @@ class TimelapseLastVideoSensor(AutoTimeLapseEntity, SensorEntity):
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         return {"media_content_id": self._manager.media_content_id}
+
+
+class TimelapseCaptureIntervalSensor(AutoTimeLapseEntity, SensorEntity):
+    """Seconds between snapshots currently in effect; unknown when idle or value-change paced."""
+
+    _attr_device_class = SensorDeviceClass.DURATION
+    _attr_native_unit_of_measurement = UnitOfTime.SECONDS
+    _attr_suggested_display_precision = 1
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, manager: TimelapseManager) -> None:
+        super().__init__(manager, "capture_interval")
+
+    @property
+    def native_value(self) -> float | None:
+        return self._manager.capture_interval

@@ -6,7 +6,7 @@ from datetime import timedelta
 from pathlib import Path
 from unittest.mock import patch
 
-from homeassistant.const import STATE_OFF, STATE_ON, STATE_UNAVAILABLE
+from homeassistant.const import STATE_OFF, STATE_ON, STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.util import dt as dt_util
@@ -71,12 +71,16 @@ async def test_capture_stop_render_cycle(
     events = []
     hass.bus.async_listen(EVENT_TIMELAPSE_FINISHED, events.append)
 
+    interval_sensor = "sensor.test_lapse_capture_interval"
+    assert hass.states.get(interval_sensor).state == STATE_UNKNOWN
+
     await hass.services.async_call(
         DOMAIN, SERVICE_START, {ATTR_DEVICE_ID: device_id}, blocking=True
     )
     await hass.async_block_till_done(wait_background_tasks=True)
     assert manager.state is SessionState.CAPTURING
     assert manager.frame_count == 1  # first frame captured immediately
+    assert hass.states.get(interval_sensor).state == "60.0"
 
     async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=61))
     await hass.async_block_till_done(wait_background_tasks=True)
@@ -97,6 +101,7 @@ async def test_capture_stop_render_cycle(
     assert events[0].data["subentry_id"] == TEST_SUBENTRY_ID
     # Frames are cleaned up after a successful render (keep_frames is off).
     assert not list(_frames_dir(tmp_path).rglob("*.jpg"))
+    assert hass.states.get(interval_sensor).state == STATE_UNKNOWN
 
 
 async def test_camera_failure_skips_frame(
@@ -248,6 +253,8 @@ async def test_value_change_cadence(
     )
     await hass.async_block_till_done(wait_background_tasks=True)
     assert manager.frame_count == 1  # immediate first frame
+    # Value-change paced: interval sensor is unknown while capturing.
+    assert hass.states.get("sensor.layer_lapse_capture_interval").state == STATE_UNKNOWN
 
     hass.states.async_set("sensor.current_layer", "1")
     await hass.async_block_till_done(wait_background_tasks=True)
@@ -328,12 +335,16 @@ async def test_fit_length_cadence(
     await setup_integration(hass, entry)
     manager = get_manager(entry)
     device_id = get_device_id(hass)
+    interval_sensor = "sensor.fit_lapse_capture_interval"
+
+    assert hass.states.get(interval_sensor).state == STATE_UNKNOWN
 
     await hass.services.async_call(
         DOMAIN, SERVICE_START, {ATTR_DEVICE_ID: device_id}, blocking=True
     )
     await hass.async_block_till_done(wait_background_tasks=True)
     assert manager.frame_count == 1  # immediate first frame
+    assert hass.states.get(interval_sensor).state == "10.0"
 
     async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=11))
     await hass.async_block_till_done(wait_background_tasks=True)
@@ -345,6 +356,12 @@ async def test_fit_length_cadence(
     async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=22))
     await hass.async_block_till_done(wait_background_tasks=True)
     assert manager.frame_count == 3
+
+    await hass.services.async_call(
+        DOMAIN, SERVICE_STOP, {ATTR_DEVICE_ID: device_id}, blocking=True
+    )
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert hass.states.get(interval_sensor).state == STATE_UNKNOWN
 
 
 async def test_fit_length_falls_back_when_unreadable(
@@ -618,6 +635,7 @@ async def test_buffer_override_interval(
     hass.states.async_set("sensor.printer_status", "complete")
     await hass.async_block_till_done(wait_background_tasks=True)
     assert manager.state is SessionState.BUFFERING
+    assert hass.states.get("sensor.buffered_capture_interval").state == "5.0"
 
     # The 5 s override is in effect (the 60 s session cadence would not fire).
     async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=6))
@@ -903,6 +921,8 @@ async def test_conditional_rules_switch_live(
     manager = await _start_conditional(hass, entry)
     assert manager.state is SessionState.CAPTURING
     assert manager.frame_count == 1  # immediate first frame
+    interval_sensor = "sensor.conditional_lapse_capture_interval"
+    assert hass.states.get(interval_sensor).state == "30.0"
 
     # Layer 5 -> first rule: a frame every 30 s.
     async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=31))
@@ -913,6 +933,7 @@ async def test_conditional_rules_switch_live(
     hass.states.async_set("sensor.current_layer", "25")
     await hass.async_block_till_done(wait_background_tasks=True)
     assert manager.frame_count == 2  # the switch itself captures nothing
+    assert hass.states.get(interval_sensor).state == "60.0"
 
     async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=31))
     await hass.async_block_till_done(wait_background_tasks=True)
@@ -926,6 +947,7 @@ async def test_conditional_rules_switch_live(
     hass.states.async_set("sensor.current_layer", "45")
     await hass.async_block_till_done(wait_background_tasks=True)
     assert manager.frame_count == 3
+    assert hass.states.get(interval_sensor).state == STATE_UNKNOWN
 
     async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=61))
     await hass.async_block_till_done(wait_background_tasks=True)
