@@ -12,6 +12,10 @@ from custom_components.auto_time_lapse.const import (
     CONF_CAMERA_ENTITY,
     CONF_CAPTURE_MODE,
     CONF_DURATION_ENTITY,
+    CONF_END_BUFFER_AMOUNT,
+    CONF_END_BUFFER_INTERVAL,
+    CONF_END_BUFFER_MODE,
+    CONF_END_BUFFER_RETRIGGER,
     CONF_FALLBACK_INTERVAL,
     CONF_FILENAME_PATTERN,
     CONF_INTERVAL,
@@ -29,9 +33,20 @@ from custom_components.auto_time_lapse.const import (
     CONF_WATCH_STATES,
     DOMAIN,
     SUBENTRY_TYPE_TRIGGER,
+    BufferRetrigger,
     CaptureMode,
+    EndBufferMode,
     TriggerMode,
     ValueDirection,
+)
+
+from .conftest import make_entry
+
+BUFFER_KEYS = (
+    CONF_END_BUFFER_MODE,
+    CONF_END_BUFFER_AMOUNT,
+    CONF_END_BUFFER_INTERVAL,
+    CONF_END_BUFFER_RETRIGGER,
 )
 
 TRIGGER_INPUT = {
@@ -103,6 +118,16 @@ async def _pass_interval_step(hass, result, interval: int = 30):
     )
 
 
+async def _pass_end_buffer_step(hass, result, user_input: dict | None = None):
+    """Complete the end-buffer step, disabled unless input is given."""
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "end_buffer"
+    return await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        user_input or {CONF_END_BUFFER_MODE: EndBufferMode.OFF.value},
+    )
+
+
 async def test_trigger_subentry_manual(hass, mock_entry):
     """A manual trigger completes after the main step."""
     await _setup_loaded_entry(hass, mock_entry)
@@ -160,12 +185,15 @@ async def test_trigger_subentry_schedule(hass, mock_entry):
         result["flow_id"],
         {CONF_SCHEDULE_START: "08:00:00", CONF_SCHEDULE_END: "20:00:00"},
     )
+    result = await _pass_end_buffer_step(hass, result)
     assert result["type"] is FlowResultType.CREATE_ENTRY
     subentry = next(
         s for s in mock_entry.subentries.values() if s.title == "Garden"
     )
     assert subentry.data[CONF_SCHEDULE_START] == "08:00:00"
     assert subentry.data[CONF_SCHEDULE_END] == "20:00:00"
+    # A disabled buffer stores none of its keys.
+    assert not any(key in subentry.data for key in BUFFER_KEYS)
 
 
 async def test_trigger_subentry_watch(hass, mock_entry):
@@ -189,6 +217,7 @@ async def test_trigger_subentry_watch(hass, mock_entry):
     result = await hass.config_entries.subentries.async_configure(
         result["flow_id"], {CONF_WATCH_STATES: ["printing", "paused"]}
     )
+    result = await _pass_end_buffer_step(hass, result)
     assert result["type"] is FlowResultType.CREATE_ENTRY
     subentry = next(
         s for s in mock_entry.subentries.values() if s.title == "Garden"
@@ -307,6 +336,7 @@ async def test_trigger_subentry_reconfigure(hass, mock_entry):
         result["flow_id"],
         {CONF_SCHEDULE_START: "06:00:00", CONF_SCHEDULE_END: "20:00:00"},
     )
+    result = await _pass_end_buffer_step(hass, result)
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "reconfigure_successful"
 
@@ -314,3 +344,144 @@ async def test_trigger_subentry_reconfigure(hass, mock_entry):
     assert subentry.title == "Renamed"
     assert subentry.data[CONF_TRIGGER_MODE] == TriggerMode.SCHEDULE.value
     assert subentry.data[CONF_SCHEDULE_START] == "06:00:00"
+
+
+async def test_trigger_subentry_manual_skips_buffer_step(hass, mock_entry):
+    """A manual trigger never shows the end-buffer step."""
+    await _setup_loaded_entry(hass, mock_entry)
+    result = await _start_trigger_flow(hass, mock_entry)
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], dict(TRIGGER_INPUT)
+    )
+    result = await _pass_interval_step(hass, result)
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    subentry = next(
+        s for s in mock_entry.subentries.values() if s.title == "Garden"
+    )
+    assert not any(key in subentry.data for key in BUFFER_KEYS)
+
+
+async def test_trigger_subentry_schedule_with_buffer(hass, mock_entry):
+    """An enabled buffer stores its mode, amount, interval, and retrigger."""
+    await _setup_loaded_entry(hass, mock_entry)
+    result = await _start_trigger_flow(hass, mock_entry)
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        dict(TRIGGER_INPUT) | {CONF_TRIGGER_MODE: TriggerMode.SCHEDULE.value},
+    )
+    result = await _pass_interval_step(hass, result)
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        {CONF_SCHEDULE_START: "08:00:00", CONF_SCHEDULE_END: "20:00:00"},
+    )
+    result = await _pass_end_buffer_step(
+        hass,
+        result,
+        {
+            CONF_END_BUFFER_MODE: EndBufferMode.FRAMES.value,
+            CONF_END_BUFFER_AMOUNT: 5,
+            CONF_END_BUFFER_INTERVAL: 2,
+            CONF_END_BUFFER_RETRIGGER: BufferRetrigger.FINISH.value,
+        },
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    subentry = next(
+        s for s in mock_entry.subentries.values() if s.title == "Garden"
+    )
+    assert subentry.data[CONF_END_BUFFER_MODE] == EndBufferMode.FRAMES.value
+    assert subentry.data[CONF_END_BUFFER_AMOUNT] == 5
+    assert subentry.data[CONF_END_BUFFER_INTERVAL] == 2
+    assert (
+        subentry.data[CONF_END_BUFFER_RETRIGGER] == BufferRetrigger.FINISH.value
+    )
+
+
+async def test_buffer_requires_interval_for_value_change(hass, mock_entry):
+    """The value-change cadence needs an override interval for the buffer."""
+    await _setup_loaded_entry(hass, mock_entry)
+    result = await _start_trigger_flow(hass, mock_entry)
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        dict(TRIGGER_INPUT)
+        | {
+            CONF_TRIGGER_MODE: TriggerMode.WATCH.value,
+            CONF_CAPTURE_MODE: CaptureMode.VALUE_CHANGE.value,
+        },
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        {
+            CONF_VALUE_ENTITY: "sensor.current_layer",
+            CONF_VALUE_DELTA: 1,
+            CONF_VALUE_DIRECTION: ValueDirection.ANY.value,
+        },
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {CONF_WATCH_ENTITY: "sensor.printer_status"}
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {CONF_WATCH_STATES: ["printing"]}
+    )
+    assert result["step_id"] == "end_buffer"
+
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        {CONF_END_BUFFER_MODE: EndBufferMode.SECONDS.value},
+    )
+    assert result["errors"] == {
+        CONF_END_BUFFER_INTERVAL: "buffer_interval_required"
+    }
+
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        {
+            CONF_END_BUFFER_MODE: EndBufferMode.SECONDS.value,
+            CONF_END_BUFFER_INTERVAL: 10,
+        },
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    subentry = next(
+        s for s in mock_entry.subentries.values() if s.title == "Garden"
+    )
+    assert subentry.data[CONF_END_BUFFER_INTERVAL] == 10
+
+
+async def test_reconfigure_to_manual_strips_buffer_keys(hass):
+    """Switching a buffered schedule trigger to manual drops the buffer."""
+    entry = make_entry(
+        {
+            CONF_TRIGGER_MODE: TriggerMode.SCHEDULE.value,
+            CONF_CAPTURE_MODE: CaptureMode.TIME.value,
+            CONF_INTERVAL: 60,
+            CONF_OUTPUT_FPS: 30,
+            CONF_FILENAME_PATTERN: "{name}_{timestamp}.mp4",
+            CONF_KEEP_FRAMES: False,
+            CONF_SCHEDULE_START: "08:00:00",
+            CONF_SCHEDULE_END: "20:00:00",
+            CONF_END_BUFFER_MODE: EndBufferMode.SECONDS.value,
+            CONF_END_BUFFER_AMOUNT: 30,
+            CONF_END_BUFFER_RETRIGGER: BufferRetrigger.RESUME.value,
+        },
+        title="Buffered",
+    )
+    await _setup_loaded_entry(hass, entry)
+    subentry_id = next(iter(entry.subentries))
+
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, SUBENTRY_TYPE_TRIGGER),
+        context={
+            "source": config_entries.SOURCE_RECONFIGURE,
+            "subentry_id": subentry_id,
+        },
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        dict(TRIGGER_INPUT) | {CONF_NAME: "Buffered"},
+    )
+    result = await _pass_interval_step(hass, result)
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "reconfigure_successful"
+
+    subentry = entry.subentries[subentry_id]
+    assert subentry.data[CONF_TRIGGER_MODE] == TriggerMode.MANUAL.value
+    assert not any(key in subentry.data for key in BUFFER_KEYS)

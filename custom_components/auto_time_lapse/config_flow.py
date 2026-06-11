@@ -36,6 +36,10 @@ from .const import (
     CONF_CAMERA_ENTITY,
     CONF_CAPTURE_MODE,
     CONF_DURATION_ENTITY,
+    CONF_END_BUFFER_AMOUNT,
+    CONF_END_BUFFER_INTERVAL,
+    CONF_END_BUFFER_MODE,
+    CONF_END_BUFFER_RETRIGGER,
     CONF_FALLBACK_INTERVAL,
     CONF_FILENAME_PATTERN,
     CONF_INTERVAL,
@@ -51,6 +55,7 @@ from .const import (
     CONF_VALUE_ENTITY,
     CONF_WATCH_ENTITY,
     CONF_WATCH_STATES,
+    DEFAULT_END_BUFFER_AMOUNT,
     DEFAULT_FALLBACK_INTERVAL,
     DEFAULT_FILENAME_PATTERN,
     DEFAULT_INTERVAL,
@@ -60,7 +65,9 @@ from .const import (
     DEFAULT_VALUE_DELTA,
     DOMAIN,
     SUBENTRY_TYPE_TRIGGER,
+    BufferRetrigger,
     CaptureMode,
+    EndBufferMode,
     TriggerMode,
     ValueDirection,
 )
@@ -347,7 +354,7 @@ class TriggerSubentryFlow(ConfigSubentryFlow):
                 errors[CONF_SCHEDULE_END] = "schedule_start_equals_end"
             else:
                 self._data.update(user_input)
-                return self._finish()
+                return await self.async_step_end_buffer()
         schema = vol.Schema(
             {
                 vol.Required(CONF_SCHEDULE_START): TimeSelector(),
@@ -391,7 +398,7 @@ class TriggerSubentryFlow(ConfigSubentryFlow):
                 errors[CONF_WATCH_STATES] = "states_required"
             else:
                 self._data[CONF_WATCH_STATES] = user_input[CONF_WATCH_STATES]
-                return self._finish()
+                return await self.async_step_end_buffer()
         schema = vol.Schema(
             {
                 vol.Required(CONF_WATCH_STATES, default=[STATE_ON]): StateSelector(
@@ -412,6 +419,79 @@ class TriggerSubentryFlow(ConfigSubentryFlow):
             errors=errors,
         )
 
+    async def async_step_end_buffer(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Configure the optional capture buffer after the trigger ends."""
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            mode = user_input[CONF_END_BUFFER_MODE]
+            if mode != EndBufferMode.OFF:
+                if not user_input.get(CONF_END_BUFFER_AMOUNT):
+                    errors[CONF_END_BUFFER_AMOUNT] = "buffer_amount_required"
+                if self._data[
+                    CONF_CAPTURE_MODE
+                ] == CaptureMode.VALUE_CHANGE and not user_input.get(
+                    CONF_END_BUFFER_INTERVAL
+                ):
+                    errors[CONF_END_BUFFER_INTERVAL] = "buffer_interval_required"
+            if not errors:
+                self._data.pop(CONF_END_BUFFER_INTERVAL, None)
+                self._data.update(user_input)
+                return self._finish()
+        schema = vol.Schema(
+            {
+                vol.Required(
+                    CONF_END_BUFFER_MODE, default=EndBufferMode.OFF.value
+                ): SelectSelector(
+                    SelectSelectorConfig(
+                        options=[mode.value for mode in EndBufferMode],
+                        mode=SelectSelectorMode.DROPDOWN,
+                        translation_key="end_buffer_mode",
+                    )
+                ),
+                vol.Optional(
+                    CONF_END_BUFFER_AMOUNT, default=DEFAULT_END_BUFFER_AMOUNT
+                ): vol.All(
+                    NumberSelector(
+                        NumberSelectorConfig(
+                            min=1, max=86400, step=1, mode=NumberSelectorMode.BOX
+                        )
+                    ),
+                    vol.Coerce(int),
+                ),
+                vol.Optional(CONF_END_BUFFER_INTERVAL): vol.All(
+                    NumberSelector(
+                        NumberSelectorConfig(
+                            min=1,
+                            max=86400,
+                            step=1,
+                            unit_of_measurement="s",
+                            mode=NumberSelectorMode.BOX,
+                        )
+                    ),
+                    vol.Coerce(int),
+                ),
+                vol.Required(
+                    CONF_END_BUFFER_RETRIGGER, default=BufferRetrigger.RESUME.value
+                ): SelectSelector(
+                    SelectSelectorConfig(
+                        options=[r.value for r in BufferRetrigger],
+                        mode=SelectSelectorMode.DROPDOWN,
+                        translation_key="end_buffer_retrigger",
+                    )
+                ),
+            }
+        )
+        suggested = user_input if user_input is not None else self._data
+        return self.async_show_form(
+            step_id="end_buffer",
+            data_schema=self.add_suggested_values_to_schema(
+                schema, suggested or None
+            ),
+            errors=errors,
+        )
+
     @callback
     def _finish(self) -> SubentryFlowResult:
         data = dict(self._data)
@@ -423,6 +503,12 @@ class TriggerSubentryFlow(ConfigSubentryFlow):
         if mode != TriggerMode.WATCH:
             data.pop(CONF_WATCH_ENTITY, None)
             data.pop(CONF_WATCH_STATES, None)
+        buffer_mode = data.get(CONF_END_BUFFER_MODE)
+        if mode == TriggerMode.MANUAL or buffer_mode in (None, EndBufferMode.OFF):
+            data.pop(CONF_END_BUFFER_MODE, None)
+            data.pop(CONF_END_BUFFER_AMOUNT, None)
+            data.pop(CONF_END_BUFFER_INTERVAL, None)
+            data.pop(CONF_END_BUFFER_RETRIGGER, None)
         cadence = data[CONF_CAPTURE_MODE]
         if cadence != CaptureMode.TIME:
             data.pop(CONF_INTERVAL, None)

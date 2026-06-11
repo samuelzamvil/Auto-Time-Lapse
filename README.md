@@ -60,6 +60,7 @@ Follow-up steps depend on your choices:
 - **Fit target video length** cadence asks for a duration entity (one that reports the expected total session length in seconds, like a printer's estimated print time), the target video length, and a fallback interval. When capture starts, the snapshot interval is computed once — duration ÷ (frame rate × target length), never below 1 second — and stays **fixed for the whole session**, so the finished video always comes out about the target length. If the entity can't be read as a positive number at that moment, the fallback interval is used instead.
 - **Entity value change** cadence asks for a numeric entity, a step (any float > 0), and a direction (*any change* / *increase only* / *decrease only*). A frame is captured each time the value moves by at least the step since the last frame; movement against the chosen direction silently re-baselines, so a counter resetting for a new run just starts counting again.
 - The **schedule** trigger asks for start/end times; the **watch** trigger asks for the entity and then shows **that entity's actual states** so you pick which ones count as active (default `on`).
+- Schedule and watch triggers then offer an **end delay buffer**: keep capturing a number of **extra frames** or **extra seconds** after the trigger ends, before the video renders — catch the build plate presenting the finished print, or the scene settling down. Optionally the buffer uses its **own snapshot interval**, overriding the session cadence (with the *entity value change* cadence the buffer is time-based, so the buffer interval is required there). You also choose what a re-trigger during the buffer does: **resume** the same session (which doubles as a debounce against a flapping entity) or **finish** the buffer, render, and start a fresh session.
 
 Triggers can be reconfigured or deleted individually at any time.
 
@@ -80,7 +81,7 @@ Each trigger creates its own device with:
 | Entity | Description |
 | --- | --- |
 | `switch.<name>_capture` | On = capturing; turning off stops and renders |
-| `sensor.<name>_status` | `idle` / `capturing` / `rendering` |
+| `sensor.<name>_status` | `idle` / `capturing` / `buffering` / `rendering` |
 | `sensor.<name>_frame_count` | Frames this session (attribute: `failed_frames`) |
 | `sensor.<name>_last_video` | Path of the last video (attribute: `media_content_id`) |
 
@@ -139,7 +140,10 @@ automation:
 - If rendering fails, frames are kept regardless of *keep frames* so you can fix the issue and call `auto_time_lapse.render`.
 - A crash or restart mid-session is survivable: the session resumes where it left off and the final video is one continuous timelapse. This works for manual, schedule, and watch triggers alike. If the session can no longer continue — the schedule window ended or the watch entity went inactive while Home Assistant was down — the frames captured so far are rendered into a video at startup instead. Leftover frames that don't belong to an interrupted session are still cleaned at startup (unless *keep frames* is on).
 - Stopping a session immediately frees the trigger for a new one while the previous video renders in the background.
-- There is no pause/resume: if a watched device drops out mid-session, the video is completed with the frames captured so far.
+- There is no pause/resume: if a watched device drops out mid-session, the video is completed with the frames captured so far (or, with an end delay buffer configured, after the buffer runs out).
+- The end delay buffer only applies when the trigger ends on its own; `auto_time_lapse.stop`, the capture switch, and `auto_time_lapse.cancel` always take effect immediately, ending any buffer in progress (stop renders, cancel discards).
+- The buffer does not survive a restart: restarting mid-buffer simply ends it early — the frames captured so far are rendered at startup (or the session resumes capturing if the trigger is active again).
+- In *extra frames* mode, if the camera stops delivering snapshots the buffer ends after a generous time budget (three times the expected duration, at least a minute) instead of waiting forever.
 
 ## ⬆️ Upgrading from 0.1.x
 

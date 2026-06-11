@@ -92,6 +92,21 @@
             "watch_states": "Capture runs while the entity is in any of these states. When it leaves them (including becoming unavailable), the capture stops and the video is rendered."
           }
         },
+        "end_buffer": {
+          "title": "End delay buffer",
+          "data": {
+            "end_buffer_mode": "Keep capturing after the trigger ends",
+            "end_buffer_amount": "Buffer amount",
+            "end_buffer_interval": "Buffer capture interval",
+            "end_buffer_retrigger": "If the trigger fires again during the buffer"
+          },
+          "data_description": {
+            "end_buffer_mode": "Off: stop and render as soon as the trigger ends. Extra frames or extra seconds: keep capturing that much longer before rendering. Only applies when the time window ends or the watched entity leaves its active states; manual stops always take effect immediately.",
+            "end_buffer_amount": "How many extra frames or seconds to capture, depending on the mode above.",
+            "end_buffer_interval": "Seconds between snapshots during the buffer, overriding the session cadence. Required with the entity-value-change cadence, which becomes time-based during the buffer. Leave empty otherwise to keep the session cadence.",
+            "end_buffer_retrigger": "Resume: cancel the buffer and keep capturing in the same session (also debounces a flapping trigger). Finish: complete the buffer, render the video, then start a fresh session."
+          }
+        },
         "interval": {
           "title": "Time interval",
           "data": {
@@ -133,7 +148,9 @@
         "schedule_start_equals_end": "Start and end time must be different.",
         "states_required": "Select at least one state.",
         "delta_positive": "The step must be greater than zero.",
-        "length_positive": "The target length must be greater than zero."
+        "length_positive": "The target length must be greater than zero.",
+        "buffer_amount_required": "Enter how many frames or seconds to buffer.",
+        "buffer_interval_required": "A buffer capture interval is required with the entity value change cadence."
       },
       "abort": {
         "reconfigure_successful": "Trigger updated."
@@ -161,6 +178,19 @@
         "increase": "Increase only",
         "decrease": "Decrease only"
       }
+    },
+    "end_buffer_mode": {
+      "options": {
+        "off": "Off",
+        "frames": "Extra frames",
+        "seconds": "Extra seconds"
+      }
+    },
+    "end_buffer_retrigger": {
+      "options": {
+        "resume": "Resume the same session",
+        "finish": "Finish, render, start fresh"
+      }
     }
   },
   "entity": {
@@ -175,6 +205,7 @@
         "state": {
           "idle": "Idle",
           "capturing": "Capturing",
+          "buffering": "Buffering",
           "rendering": "Rendering"
         }
       },

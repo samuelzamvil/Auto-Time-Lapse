@@ -35,7 +35,7 @@ async def async_setup_entry(
 
 
 class TimelapseStatusSensor(AutoTimeLapseEntity, SensorEntity):
-    """Current state of the trigger profile: idle, capturing or rendering."""
+    """Current state of the trigger profile: idle, capturing, buffering or rendering."""
 
     _attr_device_class = SensorDeviceClass.ENUM
     _attr_options = [state.value for state in SessionState]

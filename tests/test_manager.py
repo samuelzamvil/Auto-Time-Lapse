@@ -16,6 +16,10 @@ from custom_components.auto_time_lapse.const import (
     ATTR_DEVICE_ID,
     CONF_CAPTURE_MODE,
     CONF_DURATION_ENTITY,
+    CONF_END_BUFFER_AMOUNT,
+    CONF_END_BUFFER_INTERVAL,
+    CONF_END_BUFFER_MODE,
+    CONF_END_BUFFER_RETRIGGER,
     CONF_FALLBACK_INTERVAL,
     CONF_TARGET_LENGTH,
     CONF_TRIGGER_MODE,
@@ -29,7 +33,9 @@ from custom_components.auto_time_lapse.const import (
     SERVICE_CANCEL,
     SERVICE_START,
     SERVICE_STOP,
+    BufferRetrigger,
     CaptureMode,
+    EndBufferMode,
     SessionState,
     TriggerMode,
     ValueDirection,
@@ -382,6 +388,325 @@ async def test_fit_length_clamps_to_one_second(
     async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=2))
     await hass.async_block_till_done(wait_background_tasks=True)
     assert manager.frame_count == 2
+
+
+def _make_buffer_entry(base_trigger_data, **overrides):
+    """A watch trigger on a printer sensor with an end buffer configured."""
+    return make_entry(
+        base_trigger_data
+        | {
+            CONF_TRIGGER_MODE: TriggerMode.WATCH.value,
+            CONF_WATCH_ENTITY: "sensor.printer_status",
+            CONF_WATCH_STATES: ["printing"],
+            CONF_END_BUFFER_MODE: EndBufferMode.SECONDS.value,
+            CONF_END_BUFFER_AMOUNT: 120,
+            CONF_END_BUFFER_RETRIGGER: BufferRetrigger.RESUME.value,
+        }
+        | overrides,
+        title="Buffered",
+    )
+
+
+async def _start_buffered_watch(hass, entry):
+    """Set up the entry and drive the watch entity into its active state."""
+    hass.states.async_set("sensor.printer_status", "idle")
+    await setup_integration(hass, entry)
+    hass.states.async_set("sensor.printer_status", "printing")
+    await hass.async_block_till_done(wait_background_tasks=True)
+    return get_manager(entry)
+
+
+async def test_buffer_seconds_on_watch_exit(
+    hass, base_trigger_data, mock_camera_image, mock_render
+):
+    """A seconds buffer keeps the session cadence running past the trigger."""
+    entry = _make_buffer_entry(base_trigger_data)
+    manager = await _start_buffered_watch(hass, entry)
+    assert manager.state is SessionState.CAPTURING
+    assert manager.frame_count == 1
+
+    hass.states.async_set("sensor.printer_status", "complete")
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert manager.state is SessionState.BUFFERING
+    mock_render.assert_not_called()
+
+    # The 60 s session cadence keeps capturing during the buffer.
+    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=61))
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert manager.frame_count == 2
+    assert manager.state is SessionState.BUFFERING
+
+    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=125))
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert manager.state is SessionState.IDLE
+    mock_render.assert_called_once()
+
+
+async def test_buffer_frames_on_watch_exit(
+    hass, base_trigger_data, mock_camera_image, mock_render
+):
+    """A frames buffer captures exactly N more frames, then renders."""
+    entry = _make_buffer_entry(
+        base_trigger_data,
+        **{
+            CONF_END_BUFFER_MODE: EndBufferMode.FRAMES.value,
+            CONF_END_BUFFER_AMOUNT: 2,
+        },
+    )
+    manager = await _start_buffered_watch(hass, entry)
+    assert manager.frame_count == 1
+
+    hass.states.async_set("sensor.printer_status", "complete")
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert manager.state is SessionState.BUFFERING
+
+    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=61))
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert manager.frame_count == 2
+    assert manager.state is SessionState.BUFFERING
+    mock_render.assert_not_called()
+
+    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=122))
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert manager.state is SessionState.IDLE
+    mock_render.assert_called_once()
+
+
+async def test_buffer_override_interval(
+    hass, base_trigger_data, mock_camera_image, mock_render
+):
+    """An override interval replaces the session cadence during the buffer."""
+    entry = _make_buffer_entry(
+        base_trigger_data, **{CONF_END_BUFFER_INTERVAL: 5}
+    )
+    manager = await _start_buffered_watch(hass, entry)
+    assert manager.frame_count == 1
+
+    hass.states.async_set("sensor.printer_status", "complete")
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert manager.state is SessionState.BUFFERING
+
+    # The 5 s override is in effect (the 60 s session cadence would not fire).
+    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=6))
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert manager.frame_count == 2
+
+
+async def test_buffer_value_change_switches_to_time(
+    hass, base_trigger_data, mock_camera_image, mock_render
+):
+    """The value-change cadence goes time-based during the buffer."""
+    entry = _make_buffer_entry(
+        base_trigger_data,
+        **{
+            CONF_CAPTURE_MODE: CaptureMode.VALUE_CHANGE.value,
+            CONF_VALUE_ENTITY: "sensor.current_layer",
+            CONF_VALUE_DELTA: 1.0,
+            CONF_VALUE_DIRECTION: ValueDirection.ANY.value,
+            CONF_END_BUFFER_INTERVAL: 5,
+        },
+    )
+    hass.states.async_set("sensor.current_layer", "0")
+    manager = await _start_buffered_watch(hass, entry)
+    assert manager.frame_count == 1
+
+    hass.states.async_set("sensor.current_layer", "1")
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert manager.frame_count == 2
+
+    hass.states.async_set("sensor.printer_status", "complete")
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert manager.state is SessionState.BUFFERING
+
+    # Value changes no longer pace frames during the buffer.
+    hass.states.async_set("sensor.current_layer", "2")
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert manager.frame_count == 2
+
+    # The override interval does.
+    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=6))
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert manager.frame_count == 3
+
+
+async def test_manual_stop_ends_buffer_early(
+    hass, base_trigger_data, mock_camera_image, mock_render
+):
+    """The stop service ends an in-progress buffer immediately and renders."""
+    entry = _make_buffer_entry(base_trigger_data)
+    manager = await _start_buffered_watch(hass, entry)
+    device_id = get_device_id(hass)
+
+    hass.states.async_set("sensor.printer_status", "complete")
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert manager.state is SessionState.BUFFERING
+
+    await hass.services.async_call(
+        DOMAIN, SERVICE_STOP, {ATTR_DEVICE_ID: device_id}, blocking=True
+    )
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert manager.state is SessionState.IDLE
+    mock_render.assert_called_once()
+
+    # The cancelled buffer deadline has no late side effects.
+    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=125))
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert manager.state is SessionState.IDLE
+    mock_render.assert_called_once()
+
+
+async def test_cancel_during_buffer_discards(
+    hass, base_trigger_data, mock_camera_image, mock_render, tmp_path
+):
+    """Cancel during the buffer discards the frames without rendering."""
+    entry = _make_buffer_entry(base_trigger_data)
+    manager = await _start_buffered_watch(hass, entry)
+    device_id = get_device_id(hass)
+
+    hass.states.async_set("sensor.printer_status", "complete")
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert manager.state is SessionState.BUFFERING
+
+    await hass.services.async_call(
+        DOMAIN, SERVICE_CANCEL, {ATTR_DEVICE_ID: device_id}, blocking=True
+    )
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert manager.state is SessionState.IDLE
+    mock_render.assert_not_called()
+    assert not list(_frames_dir(tmp_path).rglob("*.jpg"))
+
+
+async def test_retrigger_resume_continues_session(
+    hass, base_trigger_data, mock_camera_image, mock_render, tmp_path
+):
+    """With resume, a re-trigger cancels the buffer and keeps the session."""
+    entry = _make_buffer_entry(base_trigger_data)
+    manager = await _start_buffered_watch(hass, entry)
+    assert manager.frame_count == 1
+
+    hass.states.async_set("sensor.printer_status", "complete")
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert manager.state is SessionState.BUFFERING
+
+    hass.states.async_set("sensor.printer_status", "printing")
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert manager.state is SessionState.CAPTURING
+    mock_render.assert_not_called()
+
+    # Same session keeps accumulating frames in the same directory.
+    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=61))
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert manager.frame_count == 2
+    assert len(list(_frames_dir(tmp_path).iterdir())) == 1
+
+    hass.states.async_set("sensor.printer_status", "complete")
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert manager.state is SessionState.BUFFERING
+
+    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=125))
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert manager.state is SessionState.IDLE
+    mock_render.assert_called_once()
+
+
+async def test_retrigger_finish_starts_fresh_session(
+    hass, base_trigger_data, mock_camera_image, mock_render
+):
+    """With finish, the buffer completes, renders, and a new session starts."""
+    entry = _make_buffer_entry(
+        base_trigger_data,
+        **{
+            CONF_END_BUFFER_AMOUNT: 30,
+            CONF_END_BUFFER_RETRIGGER: BufferRetrigger.FINISH.value,
+        },
+    )
+    manager = await _start_buffered_watch(hass, entry)
+    assert manager.frame_count == 1
+
+    hass.states.async_set("sensor.printer_status", "complete")
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert manager.state is SessionState.BUFFERING
+
+    # Re-activation does not interrupt the buffer.
+    hass.states.async_set("sensor.printer_status", "printing")
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert manager.state is SessionState.BUFFERING
+
+    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=31))
+    await hass.async_block_till_done(wait_background_tasks=True)
+    mock_render.assert_called_once()
+    # A fresh session began because the trigger is active again.
+    assert manager.state is SessionState.CAPTURING
+    assert manager.frame_count == 1
+
+
+async def test_buffer_frames_watchdog(
+    hass, base_trigger_data, mock_camera_image, mock_render
+):
+    """A frames buffer with a dead camera ends after the safety budget."""
+    entry = _make_buffer_entry(
+        base_trigger_data,
+        **{
+            CONF_END_BUFFER_MODE: EndBufferMode.FRAMES.value,
+            CONF_END_BUFFER_AMOUNT: 2,
+        },
+    )
+    manager = await _start_buffered_watch(hass, entry)
+    assert manager.frame_count == 1
+
+    mock_camera_image.side_effect = HomeAssistantError("camera unavailable")
+    hass.states.async_set("sensor.printer_status", "complete")
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert manager.state is SessionState.BUFFERING
+
+    # Failed snapshots do not count towards the frame budget.
+    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=61))
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert manager.frame_count == 1
+    assert manager.state is SessionState.BUFFERING
+
+    # The watchdog (2 frames * 60 s * factor 3 = 360 s) ends the buffer.
+    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=365))
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert manager.state is SessionState.IDLE
+    mock_render.assert_called_once()
+
+
+async def test_schedule_window_end_enters_buffer(
+    hass, base_trigger_data, mock_camera_image, mock_render, freezer
+):
+    """The end of a schedule window starts the buffer instead of stopping."""
+    await hass.config.async_set_time_zone("UTC")
+    freezer.move_to("2026-06-10 19:59:00+00:00")
+    entry = make_entry(
+        base_trigger_data
+        | {
+            CONF_TRIGGER_MODE: TriggerMode.SCHEDULE.value,
+            "schedule_start": "08:00:00",
+            "schedule_end": "20:00:00",
+            CONF_END_BUFFER_MODE: EndBufferMode.SECONDS.value,
+            CONF_END_BUFFER_AMOUNT: 120,
+            CONF_END_BUFFER_RETRIGGER: BufferRetrigger.RESUME.value,
+        },
+        title="Scheduled",
+    )
+    await setup_integration(hass, entry)
+    manager = get_manager(entry)
+    assert manager.state is SessionState.CAPTURING
+
+    target = dt_util.utcnow() + timedelta(seconds=61)
+    freezer.move_to(target)
+    async_fire_time_changed(hass, target)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert manager.state is SessionState.BUFFERING
+    mock_render.assert_not_called()
+
+    target = dt_util.utcnow() + timedelta(seconds=125)
+    freezer.move_to(target)
+    async_fire_time_changed(hass, target)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert manager.state is SessionState.IDLE
+    mock_render.assert_called_once()
 
 
 async def test_switch_reflects_and_controls_capture(
