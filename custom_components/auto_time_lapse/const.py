@@ -30,6 +30,10 @@ CONF_END_BUFFER_MODE = "end_buffer_mode"
 CONF_END_BUFFER_AMOUNT = "end_buffer_amount"
 CONF_END_BUFFER_INTERVAL = "end_buffer_interval"
 CONF_END_BUFFER_RETRIGGER = "end_buffer_retrigger"
+CONF_CONDITIONAL_RULES = "conditional_rules"
+CONF_CONDITIONAL_REEVALUATE = "conditional_reevaluate"
+CONF_RULE_CONDITIONS = "conditions"
+CONF_RULE_ADD_ANOTHER = "add_another"
 
 DEFAULT_INTERVAL = 60
 DEFAULT_TARGET_LENGTH = 30.0
@@ -39,6 +43,7 @@ DEFAULT_OUTPUT_FPS = 30
 DEFAULT_FILENAME_PATTERN = "{name}_{timestamp}.mp4"
 DEFAULT_KEEP_FRAMES = False
 DEFAULT_END_BUFFER_AMOUNT = 10
+DEFAULT_CONDITIONAL_REEVALUATE = True
 
 # Frames-mode buffer watchdog: end the buffer after
 # amount * interval * factor seconds (at least the minimum) even if the
@@ -94,6 +99,12 @@ class CaptureMode(StrEnum):
     TIME = "time"
     TIME_FIT = "time_fit"
     VALUE_CHANGE = "value_change"
+    CONDITIONAL = "conditional"
+
+
+# Cadences a conditional rule may use (TIME_FIT's per-session frozen
+# interval is incompatible with live rule switching).
+RULE_CAPTURE_MODES = (CaptureMode.TIME, CaptureMode.VALUE_CHANGE)
 
 
 class ValueDirection(StrEnum):
