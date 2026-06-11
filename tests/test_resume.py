@@ -14,14 +14,19 @@ from pytest_homeassistant_custom_component.common import (
 
 from custom_components.auto_time_lapse.const import (
     ATTR_DEVICE_ID,
+    CONF_CAPTURE_MODE,
+    CONF_CONDITIONAL_RULES,
     CONF_END_BUFFER_AMOUNT,
     CONF_END_BUFFER_MODE,
+    CONF_INTERVAL,
+    CONF_RULE_CONDITIONS,
     CONF_TRIGGER_MODE,
     CONF_WATCH_ENTITY,
     DOMAIN,
     SERVICE_CANCEL,
     SERVICE_START,
     SERVICE_STOP,
+    CaptureMode,
     EndBufferMode,
     SessionPhase,
     SessionState,
@@ -355,6 +360,49 @@ async def test_schedule_resumes_inside_window(
     assert manager.state is SessionState.CAPTURING
     assert manager.frame_count == 3
     mock_render.assert_not_called()
+
+
+async def test_conditional_session_resumes_with_matching_rule(
+    hass, base_trigger_data, mock_camera_image, mock_render, hass_storage, tmp_path
+):
+    """A resumed conditional session wires the rule matching at startup."""
+    _seed_session(hass_storage, tmp_path, frames=2)
+    entry = make_entry(
+        base_trigger_data
+        | {
+            CONF_CAPTURE_MODE: CaptureMode.CONDITIONAL.value,
+            CONF_CONDITIONAL_RULES: [
+                {
+                    CONF_RULE_CONDITIONS: [
+                        {
+                            "condition": "numeric_state",
+                            "entity_id": "sensor.current_layer",
+                            "below": 20,
+                        }
+                    ],
+                    CONF_CAPTURE_MODE: CaptureMode.TIME.value,
+                    CONF_INTERVAL: 5,
+                },
+                {
+                    CONF_CAPTURE_MODE: CaptureMode.TIME.value,
+                    CONF_INTERVAL: 600,
+                },
+            ],
+        },
+        title="Conditional",
+    )
+    hass.states.async_set("sensor.current_layer", "5")
+    await setup_integration(hass, entry)
+
+    manager = get_manager(entry)
+    assert manager.state is SessionState.CAPTURING
+    # Two adopted frames plus the immediate frame on resume.
+    assert manager.frame_count == 3
+
+    # The 5 s rule paces the resumed session (the 600 s default would not).
+    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=6))
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert manager.frame_count == 4
 
 
 async def test_schedule_salvages_outside_window(

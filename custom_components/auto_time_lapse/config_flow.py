@@ -17,6 +17,7 @@ from homeassistant.const import CONF_NAME, STATE_ON, STATE_UNAVAILABLE, STATE_UN
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.selector import (
     BooleanSelector,
+    ConditionSelector,
     EntitySelector,
     EntitySelectorConfig,
     NumberSelector,
@@ -35,6 +36,8 @@ import voluptuous as vol
 from .const import (
     CONF_CAMERA_ENTITY,
     CONF_CAPTURE_MODE,
+    CONF_CONDITIONAL_REEVALUATE,
+    CONF_CONDITIONAL_RULES,
     CONF_DURATION_ENTITY,
     CONF_END_BUFFER_AMOUNT,
     CONF_END_BUFFER_INTERVAL,
@@ -46,6 +49,8 @@ from .const import (
     CONF_KEEP_FRAMES,
     CONF_OUTPUT_DIR,
     CONF_OUTPUT_FPS,
+    CONF_RULE_ADD_ANOTHER,
+    CONF_RULE_CONDITIONS,
     CONF_SCHEDULE_END,
     CONF_SCHEDULE_START,
     CONF_TARGET_LENGTH,
@@ -55,6 +60,7 @@ from .const import (
     CONF_VALUE_ENTITY,
     CONF_WATCH_ENTITY,
     CONF_WATCH_STATES,
+    DEFAULT_CONDITIONAL_REEVALUATE,
     DEFAULT_END_BUFFER_AMOUNT,
     DEFAULT_FALLBACK_INTERVAL,
     DEFAULT_FILENAME_PATTERN,
@@ -64,6 +70,7 @@ from .const import (
     DEFAULT_TARGET_LENGTH,
     DEFAULT_VALUE_DELTA,
     DOMAIN,
+    RULE_CAPTURE_MODES,
     SUBENTRY_TYPE_TRIGGER,
     BufferRetrigger,
     CaptureMode,
@@ -125,6 +132,94 @@ def _validate_output_dir(
     return errors
 
 
+def _conditional_rule_schema(*, is_default: bool) -> vol.Schema:
+    """Schema for one rule of the conditional cadence.
+
+    The default (else) rule has no conditions and carries the trigger-wide
+    re-evaluation toggle instead of the add-another checkbox.
+    """
+    fields: dict[Any, Any] = {}
+    if not is_default:
+        fields[vol.Required(CONF_RULE_CONDITIONS)] = ConditionSelector()
+    fields[vol.Required(CONF_CAPTURE_MODE, default=CaptureMode.TIME.value)] = (
+        SelectSelector(
+            SelectSelectorConfig(
+                options=[mode.value for mode in RULE_CAPTURE_MODES],
+                mode=SelectSelectorMode.DROPDOWN,
+                translation_key="rule_capture_mode",
+            )
+        )
+    )
+    fields[vol.Optional(CONF_INTERVAL, default=DEFAULT_INTERVAL)] = vol.All(
+        NumberSelector(
+            NumberSelectorConfig(
+                min=1,
+                max=86400,
+                step=1,
+                unit_of_measurement="s",
+                mode=NumberSelectorMode.BOX,
+            )
+        ),
+        vol.Coerce(int),
+    )
+    fields[vol.Optional(CONF_VALUE_ENTITY)] = EntitySelector()
+    fields[vol.Optional(CONF_VALUE_DELTA, default=DEFAULT_VALUE_DELTA)] = vol.All(
+        NumberSelector(NumberSelectorConfig(step="any", mode=NumberSelectorMode.BOX)),
+        vol.Coerce(float),
+    )
+    fields[vol.Optional(CONF_VALUE_DIRECTION, default=ValueDirection.ANY.value)] = (
+        SelectSelector(
+            SelectSelectorConfig(
+                options=[d.value for d in ValueDirection],
+                mode=SelectSelectorMode.DROPDOWN,
+                translation_key="value_direction",
+            )
+        )
+    )
+    if is_default:
+        fields[
+            vol.Required(
+                CONF_CONDITIONAL_REEVALUATE, default=DEFAULT_CONDITIONAL_REEVALUATE
+            )
+        ] = BooleanSelector()
+    else:
+        fields[vol.Required(CONF_RULE_ADD_ANOTHER, default=False)] = BooleanSelector()
+    return vol.Schema(fields)
+
+
+def _validate_rule(user_input: dict[str, Any]) -> dict[str, str]:
+    """Validate the cadence settings of one conditional rule."""
+    errors: dict[str, str] = {}
+    if user_input[CONF_CAPTURE_MODE] == CaptureMode.VALUE_CHANGE:
+        if not user_input.get(CONF_VALUE_ENTITY):
+            errors[CONF_VALUE_ENTITY] = "value_entity_required"
+        if float(user_input.get(CONF_VALUE_DELTA, DEFAULT_VALUE_DELTA)) <= 0:
+            errors[CONF_VALUE_DELTA] = "delta_positive"
+    return errors
+
+
+def _build_rule(
+    user_input: dict[str, Any], *, conditions: list | None
+) -> dict[str, Any]:
+    """Assemble a stored rule dict, keeping only the chosen cadence's keys."""
+    rule: dict[str, Any] = {}
+    if conditions:
+        rule[CONF_RULE_CONDITIONS] = conditions
+    mode = user_input[CONF_CAPTURE_MODE]
+    rule[CONF_CAPTURE_MODE] = mode
+    if mode == CaptureMode.VALUE_CHANGE:
+        rule[CONF_VALUE_ENTITY] = user_input[CONF_VALUE_ENTITY]
+        rule[CONF_VALUE_DELTA] = float(
+            user_input.get(CONF_VALUE_DELTA, DEFAULT_VALUE_DELTA)
+        )
+        rule[CONF_VALUE_DIRECTION] = user_input.get(
+            CONF_VALUE_DIRECTION, ValueDirection.ANY.value
+        )
+    else:
+        rule[CONF_INTERVAL] = int(user_input.get(CONF_INTERVAL, DEFAULT_INTERVAL))
+    return rule
+
+
 class AutoTimeLapseConfigFlow(ConfigFlow, domain=DOMAIN):
     """Create a camera entry; triggers are added as subentries."""
 
@@ -168,6 +263,8 @@ class TriggerSubentryFlow(ConfigSubentryFlow):
     def __init__(self) -> None:
         super().__init__()
         self._data: dict[str, Any] = {}
+        self._rules: list[dict[str, Any]] = []
+        self._existing_rules: list[dict[str, Any]] = []
 
     @property
     def _is_new(self) -> bool:
@@ -201,6 +298,12 @@ class TriggerSubentryFlow(ConfigSubentryFlow):
                     return await self.async_step_value_change()
                 if self._data[CONF_CAPTURE_MODE] == CaptureMode.TIME_FIT:
                     return await self.async_step_fit_length()
+                if self._data[CONF_CAPTURE_MODE] == CaptureMode.CONDITIONAL:
+                    self._rules = []
+                    self._existing_rules = list(
+                        self._data.get(CONF_CONDITIONAL_RULES) or []
+                    )
+                    return await self.async_step_conditional_rule()
                 return await self.async_step_interval()
         suggested = user_input if user_input is not None else self._data
         return self.async_show_form(
@@ -344,6 +447,70 @@ class TriggerSubentryFlow(ConfigSubentryFlow):
             errors=errors,
         )
 
+    async def async_step_conditional_rule(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Configure one condition rule of the conditional cadence."""
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            if not user_input.get(CONF_RULE_CONDITIONS):
+                errors[CONF_RULE_CONDITIONS] = "conditions_required"
+            errors |= _validate_rule(user_input)
+            if not errors:
+                self._rules.append(
+                    _build_rule(
+                        user_input, conditions=user_input[CONF_RULE_CONDITIONS]
+                    )
+                )
+                if user_input[CONF_RULE_ADD_ANOTHER]:
+                    return await self.async_step_conditional_rule()
+                return await self.async_step_conditional_default()
+        index = len(self._rules)
+        suggested = user_input
+        if suggested is None and index < len(self._existing_rules) - 1:
+            # Prefill from the same-position rule of the existing config;
+            # the last existing rule is the default and prefills that step.
+            suggested = dict(self._existing_rules[index])
+            suggested[CONF_RULE_ADD_ANOTHER] = (
+                index < len(self._existing_rules) - 2
+            )
+        return self.async_show_form(
+            step_id="conditional_rule",
+            data_schema=self.add_suggested_values_to_schema(
+                _conditional_rule_schema(is_default=False), suggested
+            ),
+            errors=errors,
+            description_placeholders={"rule_number": str(index + 1)},
+        )
+
+    async def async_step_conditional_default(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Configure the else/default rule of the conditional cadence."""
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            errors = _validate_rule(user_input)
+            if not errors:
+                self._rules.append(_build_rule(user_input, conditions=None))
+                self._data[CONF_CONDITIONAL_RULES] = self._rules
+                self._data[CONF_CONDITIONAL_REEVALUATE] = user_input[
+                    CONF_CONDITIONAL_REEVALUATE
+                ]
+                return await self._async_next_trigger_step()
+        suggested = user_input
+        if suggested is None and self._existing_rules:
+            suggested = dict(self._existing_rules[-1])
+            suggested[CONF_CONDITIONAL_REEVALUATE] = self._data.get(
+                CONF_CONDITIONAL_REEVALUATE, DEFAULT_CONDITIONAL_REEVALUATE
+            )
+        return self.async_show_form(
+            step_id="conditional_default",
+            data_schema=self.add_suggested_values_to_schema(
+                _conditional_rule_schema(is_default=True), suggested
+            ),
+            errors=errors,
+        )
+
     async def async_step_schedule(
         self, user_input: dict[str, Any] | None = None
     ) -> SubentryFlowResult:
@@ -429,9 +596,7 @@ class TriggerSubentryFlow(ConfigSubentryFlow):
             if mode != EndBufferMode.OFF:
                 if not user_input.get(CONF_END_BUFFER_AMOUNT):
                     errors[CONF_END_BUFFER_AMOUNT] = "buffer_amount_required"
-                if self._data[
-                    CONF_CAPTURE_MODE
-                ] == CaptureMode.VALUE_CHANGE and not user_input.get(
+                if self._buffer_interval_required() and not user_input.get(
                     CONF_END_BUFFER_INTERVAL
                 ):
                     errors[CONF_END_BUFFER_INTERVAL] = "buffer_interval_required"
@@ -492,6 +657,18 @@ class TriggerSubentryFlow(ConfigSubentryFlow):
             errors=errors,
         )
 
+    def _buffer_interval_required(self) -> bool:
+        """Whether the end buffer needs its own time-based interval."""
+        cadence = self._data[CONF_CAPTURE_MODE]
+        if cadence == CaptureMode.VALUE_CHANGE:
+            return True
+        # A conditional cadence may be value-change paced when the buffer
+        # starts, so it needs the override too.
+        return cadence == CaptureMode.CONDITIONAL and any(
+            rule.get(CONF_CAPTURE_MODE) == CaptureMode.VALUE_CHANGE
+            for rule in self._data.get(CONF_CONDITIONAL_RULES) or []
+        )
+
     @callback
     def _finish(self) -> SubentryFlowResult:
         data = dict(self._data)
@@ -520,6 +697,9 @@ class TriggerSubentryFlow(ConfigSubentryFlow):
             data.pop(CONF_VALUE_ENTITY, None)
             data.pop(CONF_VALUE_DELTA, None)
             data.pop(CONF_VALUE_DIRECTION, None)
+        if cadence != CaptureMode.CONDITIONAL:
+            data.pop(CONF_CONDITIONAL_RULES, None)
+            data.pop(CONF_CONDITIONAL_REEVALUATE, None)
         if self._is_new:
             return self.async_create_entry(title=title, data=data)
         return self.async_update_and_abort(

@@ -37,7 +37,7 @@
           "data_description": {
             "name": "Used for the device name and as the name placeholder in filenames.",
             "trigger_mode": "Manual: start and stop with the switch or services. Daily time window: capture between two times every day. Entity state watch: capture while another entity is in chosen states.",
-            "capture_mode": "Time interval: a snapshot every N seconds. Fit target video length: the interval is computed from a duration entity so the video always comes out about a chosen length. Entity value change: a snapshot each time a numeric entity moves by a chosen step, for example one frame per 3D-printer layer.",
+            "capture_mode": "Time interval: a snapshot every N seconds. Fit target video length: the interval is computed from a duration entity so the video always comes out about a chosen length. Entity value change: a snapshot each time a numeric entity moves by a chosen step, for example one frame per 3D-printer layer. Conditional: rules with Home Assistant conditions decide which cadence applies, with a default for when no rule matches.",
             "output_dir": "Folder for finished videos, created automatically if it does not exist (for example /media/timelapses). Leave empty for the default media folder. Anything under /media shows up in the Media Browser, including NAS shares added via Settings > System > Storage. Paths outside a media folder must be listed in allowlist_external_dirs.",
             "filename_pattern": "Pattern for the video filename. Wrap the placeholders name, timestamp or entry_id in curly braces to insert them, as in the default value.",
             "keep_frames": "Keep the individual snapshot frames on disk after the video is rendered."
@@ -57,7 +57,7 @@
           "data_description": {
             "name": "Used for the device name and as the name placeholder in filenames.",
             "trigger_mode": "Manual: start and stop with the switch or services. Daily time window: capture between two times every day. Entity state watch: capture while another entity is in chosen states.",
-            "capture_mode": "Time interval: a snapshot every N seconds. Fit target video length: the interval is computed from a duration entity so the video always comes out about a chosen length. Entity value change: a snapshot each time a numeric entity moves by a chosen step, for example one frame per 3D-printer layer.",
+            "capture_mode": "Time interval: a snapshot every N seconds. Fit target video length: the interval is computed from a duration entity so the video always comes out about a chosen length. Entity value change: a snapshot each time a numeric entity moves by a chosen step, for example one frame per 3D-printer layer. Conditional: rules with Home Assistant conditions decide which cadence applies, with a default for when no rule matches.",
             "output_dir": "Folder for finished videos, created automatically if it does not exist (for example /media/timelapses). Leave empty for the default media folder. Anything under /media shows up in the Media Browser, including NAS shares added via Settings > System > Storage. Paths outside a media folder must be listed in allowlist_external_dirs.",
             "filename_pattern": "Pattern for the video filename. Wrap the placeholders name, timestamp or entry_id in curly braces to insert them, as in the default value.",
             "keep_frames": "Keep the individual snapshot frames on disk after the video is rendered."
@@ -141,6 +141,48 @@
             "value_delta": "A frame is captured each time the value moves by at least this amount since the last frame. Use 1 for one frame per layer.",
             "value_direction": "Which way the value must move to capture. With increase or decrease, movement the other way re-baselines silently (a layer counter resetting for a new print just starts counting again)."
           }
+        },
+        "conditional_rule": {
+          "title": "Cadence rule {rule_number}",
+          "description": "Rules are checked top to bottom; the first one whose conditions hold paces the frames. Fill in only the settings for the chosen cadence.",
+          "data": {
+            "conditions": "Conditions",
+            "capture_mode": "Cadence while these conditions hold",
+            "interval": "Capture interval (time interval cadence)",
+            "value_entity": "Value entity (value change cadence)",
+            "value_delta": "Capture every (value change cadence)",
+            "value_direction": "Direction (value change cadence)",
+            "add_another": "Add another rule"
+          },
+          "data_description": {
+            "conditions": "Home Assistant conditions that must all hold for this rule to apply, for example a numeric state condition on a layer count sensor.",
+            "capture_mode": "Time interval: a snapshot every N seconds. Entity value change: a snapshot each time a numeric entity moves by a chosen step.",
+            "interval": "Seconds between snapshots while this rule applies.",
+            "value_entity": "Numeric entity that paces the frames while this rule applies.",
+            "value_delta": "A frame is captured each time the value moves by at least this amount since the last frame. Use 1 for one frame per layer.",
+            "value_direction": "Which way the value must move to capture.",
+            "add_another": "Add one more rule after this one. The default cadence for when no rule matches is configured last either way."
+          }
+        },
+        "conditional_default": {
+          "title": "Default cadence",
+          "description": "Used whenever no rule's conditions hold. Fill in only the settings for the chosen cadence.",
+          "data": {
+            "capture_mode": "Default cadence",
+            "interval": "Capture interval (time interval cadence)",
+            "value_entity": "Value entity (value change cadence)",
+            "value_delta": "Capture every (value change cadence)",
+            "value_direction": "Direction (value change cadence)",
+            "conditional_reevaluate": "Re-evaluate rules during a session"
+          },
+          "data_description": {
+            "capture_mode": "Time interval: a snapshot every N seconds. Entity value change: a snapshot each time a numeric entity moves by a chosen step.",
+            "interval": "Seconds between snapshots while no rule applies.",
+            "value_entity": "Numeric entity that paces the frames while no rule applies.",
+            "value_delta": "A frame is captured each time the value moves by at least this amount since the last frame. Use 1 for one frame per layer.",
+            "value_direction": "Which way the value must move to capture.",
+            "conditional_reevaluate": "On: the rules are re-checked while capturing and the cadence switches as soon as another rule matches. Off: the rule matching at session start is locked in for the whole session."
+          }
         }
       },
       "error": {
@@ -150,7 +192,9 @@
         "delta_positive": "The step must be greater than zero.",
         "length_positive": "The target length must be greater than zero.",
         "buffer_amount_required": "Enter how many frames or seconds to buffer.",
-        "buffer_interval_required": "A buffer capture interval is required with the entity value change cadence."
+        "buffer_interval_required": "A buffer capture interval is required when the session can be paced by entity value changes.",
+        "conditions_required": "Add at least one condition, or finish with the default cadence instead.",
+        "value_entity_required": "Pick the entity that paces the frames for the value change cadence."
       },
       "abort": {
         "reconfigure_successful": "Trigger updated."
@@ -169,6 +213,13 @@
       "options": {
         "time": "Time interval",
         "time_fit": "Fit target video length",
+        "value_change": "Entity value change",
+        "conditional": "Conditional (rule based)"
+      }
+    },
+    "rule_capture_mode": {
+      "options": {
+        "time": "Time interval",
         "value_change": "Entity value change"
       }
     },

@@ -22,7 +22,12 @@ from homeassistant.core import (
     HomeAssistant,
     callback,
 )
-from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+from homeassistant.exceptions import (
+    ConditionError,
+    HomeAssistantError,
+    ServiceValidationError,
+)
+from homeassistant.helpers import condition
 from homeassistant.helpers.event import (
     async_call_later,
     async_track_state_change_event,
@@ -30,12 +35,15 @@ from homeassistant.helpers.event import (
     async_track_time_interval,
 )
 from homeassistant.util import dt as dt_util, slugify
+import voluptuous as vol
 
 from .const import (
     BUFFER_SAFETY_FACTOR,
     BUFFER_SAFETY_MIN,
     CONF_CAMERA_ENTITY,
     CONF_CAPTURE_MODE,
+    CONF_CONDITIONAL_REEVALUATE,
+    CONF_CONDITIONAL_RULES,
     CONF_DURATION_ENTITY,
     CONF_END_BUFFER_AMOUNT,
     CONF_END_BUFFER_INTERVAL,
@@ -47,6 +55,7 @@ from .const import (
     CONF_KEEP_FRAMES,
     CONF_OUTPUT_DIR,
     CONF_OUTPUT_FPS,
+    CONF_RULE_CONDITIONS,
     CONF_SCHEDULE_END,
     CONF_SCHEDULE_START,
     CONF_TARGET_LENGTH,
@@ -56,6 +65,7 @@ from .const import (
     CONF_VALUE_ENTITY,
     CONF_WATCH_ENTITY,
     CONF_WATCH_STATES,
+    DEFAULT_CONDITIONAL_REEVALUATE,
     DEFAULT_END_BUFFER_AMOUNT,
     DEFAULT_FALLBACK_INTERVAL,
     DEFAULT_FILENAME_PATTERN,
@@ -127,6 +137,12 @@ class TimelapseManager:
         self._last_session_frames = 0
         self._render_lock = asyncio.Lock()
         self._unsub_capture: CALLBACK_TYPE | None = None
+        self._unsub_conditions: CALLBACK_TYPE | None = None
+        self._rule_checkers: list[
+            tuple[dict, condition.ConditionCheckerType | None]
+        ] = []
+        self._active_rule: dict | None = None
+        self._active_rule_index: int | None = None
         self._value_baseline: float | None = None
         self._buffering = False
         self._buffer_frames_remaining: int | None = None
@@ -143,6 +159,13 @@ class TimelapseManager:
     @property
     def _options(self) -> dict:
         return dict(self.subentry.data)
+
+    @property
+    def _cadence_options(self) -> dict:
+        """Where cadence settings come from: the active conditional rule, if any."""
+        if self._active_rule is not None:
+            return self._active_rule
+        return self._options
 
     @property
     def title(self) -> str:
@@ -163,7 +186,7 @@ class TimelapseManager:
 
     @property
     def interval(self) -> int:
-        return int(self._options.get(CONF_INTERVAL, DEFAULT_INTERVAL))
+        return int(self._cadence_options.get(CONF_INTERVAL, DEFAULT_INTERVAL))
 
     @property
     def duration_entity(self) -> str | None:
@@ -188,20 +211,32 @@ class TimelapseManager:
 
     @property
     def value_entity(self) -> str | None:
-        return self._options.get(CONF_VALUE_ENTITY)
+        return self._cadence_options.get(CONF_VALUE_ENTITY)
 
     @property
     def value_delta(self) -> float:
-        return float(self._options.get(CONF_VALUE_DELTA, DEFAULT_VALUE_DELTA))
+        return float(self._cadence_options.get(CONF_VALUE_DELTA, DEFAULT_VALUE_DELTA))
 
     @property
     def value_direction(self) -> ValueDirection:
         try:
             return ValueDirection(
-                self._options.get(CONF_VALUE_DIRECTION, ValueDirection.ANY)
+                self._cadence_options.get(CONF_VALUE_DIRECTION, ValueDirection.ANY)
             )
         except ValueError:
             return ValueDirection.ANY
+
+    @property
+    def conditional_rules(self) -> list[dict]:
+        return list(self._options.get(CONF_CONDITIONAL_RULES) or [])
+
+    @property
+    def conditional_reevaluate(self) -> bool:
+        return bool(
+            self._options.get(
+                CONF_CONDITIONAL_REEVALUATE, DEFAULT_CONDITIONAL_REEVALUATE
+            )
+        )
 
     @property
     def output_fps(self) -> int:
@@ -484,6 +519,7 @@ class TimelapseManager:
             )
         self._clear_buffer_state()
         self._cancel_capture_listener()
+        self._cancel_condition_listener()
         self._capturing = False
         self._session_dir = None
         for unsub in self._unsubs:
@@ -555,11 +591,11 @@ class TimelapseManager:
         """Keep capturing past the trigger end for the configured buffer."""
         self._buffering = True
         override = self.end_buffer_interval
-        if override is not None or self.capture_mode is CaptureMode.VALUE_CHANGE:
-            # VALUE_CHANGE always goes time-based during the buffer: the
-            # watched value typically stops moving once the trigger ends.
-            # The config flow requires an override interval in that case;
-            # fall back to the plain interval defensively if it is missing.
+        if override is not None or self._effective_value_change():
+            # A value-change cadence always goes time-based during the
+            # buffer: the watched value typically stops moving once the
+            # trigger ends. The config flow requires an override interval in
+            # that case; fall back to the plain interval if it is missing.
             seconds = float(override or self.interval)
             self._cancel_capture_listener()
             self._unsub_capture = async_track_time_interval(
@@ -616,12 +652,27 @@ class TimelapseManager:
         if restart:
             await self.async_start()
 
+    def _effective_value_change(self) -> bool:
+        """Whether the cadence currently in effect is value-change paced."""
+        if self.capture_mode is CaptureMode.VALUE_CHANGE:
+            return True
+        return (
+            self.capture_mode is CaptureMode.CONDITIONAL
+            and self._active_rule is not None
+            and self._active_rule.get(CONF_CAPTURE_MODE) == CaptureMode.VALUE_CHANGE
+        )
+
     @callback
     def _async_resume_from_buffer(self) -> None:
         """Abort the buffer and continue capturing in the same session."""
         rewired = self._buffer_cadence_rewired
         self._clear_buffer_state()
-        if rewired:
+        # Rule re-evaluation is suspended while buffering, so a conditional
+        # cadence must re-select on resume even if it was not rewired.
+        if rewired or (
+            self.capture_mode is CaptureMode.CONDITIONAL
+            and self.conditional_reevaluate
+        ):
             self._cancel_capture_listener()
             self._wire_capture_cadence()
         _LOGGER.info(
@@ -682,42 +733,163 @@ class TimelapseManager:
     async def _begin_capture(self) -> None:
         """Wire the frame cadence for the just-started session."""
         self._session_capture_seconds = None
+        if self.capture_mode is CaptureMode.CONDITIONAL:
+            await self._async_setup_conditional()
         self._wire_capture_cadence()
         self._notify()
         await self._async_capture_frame()
 
+    async def _async_setup_conditional(self) -> None:
+        """Build the rule condition checkers and track their entities."""
+        self._cancel_condition_listener()
+        checkers: list[tuple[dict, condition.ConditionCheckerType | None]] = []
+        entities: set[str] = set()
+        for index, rule in enumerate(self.conditional_rules):
+            conditions = rule.get(CONF_RULE_CONDITIONS)
+            if not conditions:
+                # The default rule: always matches.
+                checkers.append((rule, None))
+                continue
+            config = {"condition": "and", "conditions": conditions}
+            try:
+                config = await condition.async_validate_condition_config(
+                    self.hass, config
+                )
+                checker = await condition.async_from_config(self.hass, config)
+            except (vol.Invalid, HomeAssistantError) as err:
+                _LOGGER.error(
+                    "Invalid conditions in cadence rule %d for %s; the rule "
+                    "will never match: %s",
+                    index + 1,
+                    self.title,
+                    err,
+                )
+                checkers.append((rule, lambda hass, variables: False))
+                continue
+            checkers.append((rule, checker))
+            entities |= condition.async_extract_entities(config)
+        self._rule_checkers = checkers
+        if self.conditional_reevaluate and entities:
+            self._unsub_conditions = async_track_state_change_event(
+                self.hass, list(entities), self._async_on_condition_change
+            )
+
+    def _select_conditional_rule(self) -> tuple[int | None, dict | None]:
+        """Return the first rule whose conditions currently hold."""
+        for index, (rule, checker) in enumerate(self._rule_checkers):
+            if checker is None:
+                return index, rule
+            try:
+                if checker(self.hass, None):
+                    return index, rule
+            except ConditionError as err:
+                _LOGGER.debug(
+                    "Cadence rule %d for %s failed to evaluate: %s",
+                    index + 1,
+                    self.title,
+                    err,
+                )
+        if self._rule_checkers:
+            # No rule matched; the config flow enforces a condition-less
+            # default rule, so this only happens with hand-edited data.
+            index = len(self._rule_checkers) - 1
+            return index, self._rule_checkers[index][0]
+        return None, None
+
     @callback
     def _wire_capture_cadence(self) -> None:
         """Hook up the capture listener for the session's cadence."""
+        if self.capture_mode is CaptureMode.CONDITIONAL:
+            self._wire_conditional_cadence()
+            return
         if self.capture_mode is CaptureMode.VALUE_CHANGE and self.value_entity:
-            self._value_baseline = self._current_value()
-            self._unsub_capture = async_track_state_change_event(
-                self.hass, [self.value_entity], self._async_on_value_change
-            )
-            _LOGGER.info(
-                "Started timelapse capture for %s (camera %s, frame per %s "
-                "change of %s, direction %s)",
-                self.title,
-                self.camera_entity,
-                self.value_delta,
-                self.value_entity,
-                self.value_direction.value,
-            )
+            self._wire_value_change()
         else:
             # The interval is computed once and stays frozen for the whole
             # session, including when capture is re-wired after a buffer.
             if self._session_capture_seconds is None:
                 self._session_capture_seconds = self._capture_interval_seconds()
-            seconds = self._session_capture_seconds
-            self._unsub_capture = async_track_time_interval(
-                self.hass, self._async_capture_frame, timedelta(seconds=seconds)
+            self._wire_time_interval(self._session_capture_seconds)
+
+    @callback
+    def _wire_conditional_cadence(self) -> None:
+        """Wire the cadence of the conditional rule that currently matches."""
+        # With live re-evaluation off, the rule selected at session start
+        # stays locked for the whole session (including buffer rewires).
+        if self._active_rule is None or self.conditional_reevaluate:
+            self._active_rule_index, self._active_rule = (
+                self._select_conditional_rule()
             )
-            _LOGGER.info(
-                "Started timelapse capture for %s (camera %s, every %.1f s)",
-                self.title,
-                self.camera_entity,
-                seconds,
-            )
+        rule = self._active_rule
+        if (
+            rule is not None
+            and rule.get(CONF_CAPTURE_MODE) == CaptureMode.VALUE_CHANGE
+            and self.value_entity
+        ):
+            self._wire_value_change()
+        else:
+            # The interval property reads from the active rule here, so the
+            # cadence is never frozen via _session_capture_seconds.
+            self._wire_time_interval(float(self.interval))
+
+    @callback
+    def _wire_value_change(self) -> None:
+        """Capture a frame per movement of the watched value entity."""
+        self._value_baseline = self._current_value()
+        self._unsub_capture = async_track_state_change_event(
+            self.hass, [self.value_entity], self._async_on_value_change
+        )
+        _LOGGER.info(
+            "Started timelapse capture for %s (camera %s, frame per %s "
+            "change of %s, direction %s)",
+            self.title,
+            self.camera_entity,
+            self.value_delta,
+            self.value_entity,
+            self.value_direction.value,
+        )
+
+    @callback
+    def _wire_time_interval(self, seconds: float) -> None:
+        """Capture a frame every fixed number of seconds."""
+        self._unsub_capture = async_track_time_interval(
+            self.hass, self._async_capture_frame, timedelta(seconds=seconds)
+        )
+        _LOGGER.info(
+            "Started timelapse capture for %s (camera %s, every %.1f s)",
+            self.title,
+            self.camera_entity,
+            seconds,
+        )
+
+    @callback
+    def _async_on_condition_change(
+        self, event: Event[EventStateChangedData]
+    ) -> None:
+        self._maybe_switch_conditional_rule()
+
+    @callback
+    def _maybe_switch_conditional_rule(self) -> None:
+        """Re-evaluate the rules and rewire the cadence on a change."""
+        if (
+            not self._capturing
+            or self._buffering
+            or self.capture_mode is not CaptureMode.CONDITIONAL
+            or not self.conditional_reevaluate
+        ):
+            return
+        index, rule = self._select_conditional_rule()
+        if index == self._active_rule_index:
+            return
+        self._active_rule_index = index
+        self._active_rule = rule
+        _LOGGER.info(
+            "Conditions changed for %s; switching to cadence rule %s",
+            self.title,
+            "?" if index is None else index + 1,
+        )
+        self._cancel_capture_listener()
+        self._wire_capture_cadence()
 
     async def async_stop(self, render: bool = True) -> None:
         """End the capture session, optionally rendering the video."""
@@ -725,6 +897,7 @@ class TimelapseManager:
             return
         self._clear_buffer_state()
         self._cancel_capture_listener()
+        self._cancel_condition_listener()
         self._capturing = False
         self._session_capture_seconds = None
         session_dir = self._session_dir
@@ -762,6 +935,7 @@ class TimelapseManager:
             return
         self._clear_buffer_state()
         self._cancel_capture_listener()
+        self._cancel_condition_listener()
         self._capturing = False
         self._session_capture_seconds = None
         session_dir = self._session_dir
@@ -834,6 +1008,16 @@ class TimelapseManager:
             self._unsub_capture()
             self._unsub_capture = None
         self._value_baseline = None
+
+    @callback
+    def _cancel_condition_listener(self) -> None:
+        """Drop conditional-rule tracking; the next session rebuilds it."""
+        if self._unsub_conditions is not None:
+            self._unsub_conditions()
+            self._unsub_conditions = None
+        self._rule_checkers = []
+        self._active_rule = None
+        self._active_rule_index = None
 
     def _capture_interval_seconds(self) -> float:
         """Return the seconds between snapshots for this session."""
@@ -958,6 +1142,9 @@ class TimelapseManager:
                 await self._async_finish_buffer()
                 return
         self._notify()
+        # Conditions that reference no trackable entity (template, time, sun)
+        # produce no state-change events; re-check the rules per frame too.
+        self._maybe_switch_conditional_rule()
 
     # ------------------------------------------------------------------ render
 

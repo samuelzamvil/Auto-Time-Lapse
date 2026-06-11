@@ -11,6 +11,8 @@ from homeassistant.data_entry_flow import FlowResultType
 from custom_components.auto_time_lapse.const import (
     CONF_CAMERA_ENTITY,
     CONF_CAPTURE_MODE,
+    CONF_CONDITIONAL_REEVALUATE,
+    CONF_CONDITIONAL_RULES,
     CONF_DURATION_ENTITY,
     CONF_END_BUFFER_AMOUNT,
     CONF_END_BUFFER_INTERVAL,
@@ -22,6 +24,8 @@ from custom_components.auto_time_lapse.const import (
     CONF_KEEP_FRAMES,
     CONF_OUTPUT_DIR,
     CONF_OUTPUT_FPS,
+    CONF_RULE_ADD_ANOTHER,
+    CONF_RULE_CONDITIONS,
     CONF_SCHEDULE_END,
     CONF_SCHEDULE_START,
     CONF_TARGET_LENGTH,
@@ -444,6 +448,253 @@ async def test_buffer_requires_interval_for_value_change(hass, mock_entry):
         s for s in mock_entry.subentries.values() if s.title == "Garden"
     )
     assert subentry.data[CONF_END_BUFFER_INTERVAL] == 10
+
+
+LAYER_BELOW_20 = [
+    {
+        "condition": "numeric_state",
+        "entity_id": "sensor.current_layer",
+        "below": 20,
+    }
+]
+LAYER_BELOW_40 = [
+    {
+        "condition": "numeric_state",
+        "entity_id": "sensor.current_layer",
+        "below": 40,
+    }
+]
+
+
+async def test_trigger_subentry_conditional(hass, mock_entry):
+    """The conditional cadence collects rules and a default, in order."""
+    await _setup_loaded_entry(hass, mock_entry)
+    result = await _start_trigger_flow(hass, mock_entry)
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        dict(TRIGGER_INPUT) | {CONF_CAPTURE_MODE: CaptureMode.CONDITIONAL.value},
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "conditional_rule"
+
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        {
+            CONF_RULE_CONDITIONS: LAYER_BELOW_20,
+            CONF_CAPTURE_MODE: CaptureMode.TIME.value,
+            CONF_INTERVAL: 30,
+            CONF_RULE_ADD_ANOTHER: True,
+        },
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "conditional_rule"
+
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        {
+            CONF_RULE_CONDITIONS: LAYER_BELOW_40,
+            CONF_CAPTURE_MODE: CaptureMode.TIME.value,
+            CONF_INTERVAL: 60,
+            CONF_RULE_ADD_ANOTHER: False,
+        },
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "conditional_default"
+
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        {
+            CONF_CAPTURE_MODE: CaptureMode.VALUE_CHANGE.value,
+            CONF_VALUE_ENTITY: "sensor.current_layer",
+            CONF_VALUE_DELTA: 1,
+            CONF_VALUE_DIRECTION: ValueDirection.INCREASE.value,
+            CONF_CONDITIONAL_REEVALUATE: True,
+        },
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    subentry = next(
+        s for s in mock_entry.subentries.values() if s.title == "Garden"
+    )
+    assert subentry.data[CONF_CAPTURE_MODE] == CaptureMode.CONDITIONAL.value
+    assert subentry.data[CONF_CONDITIONAL_REEVALUATE] is True
+    rules = subentry.data[CONF_CONDITIONAL_RULES]
+    assert len(rules) == 3
+    # The selector normalizes condition configs (entity_id becomes a list).
+    (condition_0,) = rules[0][CONF_RULE_CONDITIONS]
+    assert condition_0["condition"] == "numeric_state"
+    assert condition_0["entity_id"] == ["sensor.current_layer"]
+    assert condition_0["below"] == 20
+    assert rules[0][CONF_CAPTURE_MODE] == CaptureMode.TIME.value
+    assert rules[0][CONF_INTERVAL] == 30
+    assert CONF_VALUE_ENTITY not in rules[0]
+    assert rules[1][CONF_INTERVAL] == 60
+    # The default rule has no conditions and only value-change keys.
+    assert CONF_RULE_CONDITIONS not in rules[2]
+    assert rules[2][CONF_CAPTURE_MODE] == CaptureMode.VALUE_CHANGE.value
+    assert rules[2][CONF_VALUE_ENTITY] == "sensor.current_layer"
+    assert CONF_INTERVAL not in rules[2]
+    # No per-rule cadence keys leak to the top level.
+    assert CONF_INTERVAL not in subentry.data
+    assert CONF_VALUE_ENTITY not in subentry.data
+
+
+async def test_conditional_rule_validation(hass, mock_entry):
+    """Rules need conditions, and value-change rules need entity and step."""
+    await _setup_loaded_entry(hass, mock_entry)
+    result = await _start_trigger_flow(hass, mock_entry)
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        dict(TRIGGER_INPUT) | {CONF_CAPTURE_MODE: CaptureMode.CONDITIONAL.value},
+    )
+
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        {
+            CONF_RULE_CONDITIONS: [],
+            CONF_CAPTURE_MODE: CaptureMode.VALUE_CHANGE.value,
+            CONF_VALUE_DELTA: 0,
+            CONF_RULE_ADD_ANOTHER: False,
+        },
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {
+        CONF_RULE_CONDITIONS: "conditions_required",
+        CONF_VALUE_ENTITY: "value_entity_required",
+        CONF_VALUE_DELTA: "delta_positive",
+    }
+
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        {
+            CONF_RULE_CONDITIONS: LAYER_BELOW_20,
+            CONF_CAPTURE_MODE: CaptureMode.TIME.value,
+            CONF_INTERVAL: 30,
+            CONF_RULE_ADD_ANOTHER: False,
+        },
+    )
+    assert result["step_id"] == "conditional_default"
+
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        {
+            CONF_CAPTURE_MODE: CaptureMode.VALUE_CHANGE.value,
+            CONF_VALUE_DELTA: 0,
+            CONF_CONDITIONAL_REEVALUATE: True,
+        },
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {
+        CONF_VALUE_ENTITY: "value_entity_required",
+        CONF_VALUE_DELTA: "delta_positive",
+    }
+
+
+async def test_buffer_requires_interval_for_conditional_value_rule(
+    hass, mock_entry
+):
+    """A conditional cadence with a value-change rule needs a buffer interval."""
+    await _setup_loaded_entry(hass, mock_entry)
+    result = await _start_trigger_flow(hass, mock_entry)
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        dict(TRIGGER_INPUT)
+        | {
+            CONF_TRIGGER_MODE: TriggerMode.WATCH.value,
+            CONF_CAPTURE_MODE: CaptureMode.CONDITIONAL.value,
+        },
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        {
+            CONF_RULE_CONDITIONS: LAYER_BELOW_20,
+            CONF_CAPTURE_MODE: CaptureMode.TIME.value,
+            CONF_INTERVAL: 30,
+            CONF_RULE_ADD_ANOTHER: False,
+        },
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        {
+            CONF_CAPTURE_MODE: CaptureMode.VALUE_CHANGE.value,
+            CONF_VALUE_ENTITY: "sensor.current_layer",
+            CONF_VALUE_DELTA: 1,
+            CONF_VALUE_DIRECTION: ValueDirection.ANY.value,
+            CONF_CONDITIONAL_REEVALUATE: True,
+        },
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {CONF_WATCH_ENTITY: "sensor.printer_status"}
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {CONF_WATCH_STATES: ["printing"]}
+    )
+    assert result["step_id"] == "end_buffer"
+
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        {CONF_END_BUFFER_MODE: EndBufferMode.SECONDS.value},
+    )
+    assert result["errors"] == {
+        CONF_END_BUFFER_INTERVAL: "buffer_interval_required"
+    }
+
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        {
+            CONF_END_BUFFER_MODE: EndBufferMode.SECONDS.value,
+            CONF_END_BUFFER_INTERVAL: 10,
+        },
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+
+
+async def test_reconfigure_conditional_to_time_strips_rules(hass):
+    """Switching a conditional trigger to a plain cadence drops the rules."""
+    entry = make_entry(
+        {
+            CONF_TRIGGER_MODE: TriggerMode.MANUAL.value,
+            CONF_CAPTURE_MODE: CaptureMode.CONDITIONAL.value,
+            CONF_CONDITIONAL_RULES: [
+                {
+                    CONF_RULE_CONDITIONS: LAYER_BELOW_20,
+                    CONF_CAPTURE_MODE: CaptureMode.TIME.value,
+                    CONF_INTERVAL: 30,
+                },
+                {
+                    CONF_CAPTURE_MODE: CaptureMode.TIME.value,
+                    CONF_INTERVAL: 60,
+                },
+            ],
+            CONF_CONDITIONAL_REEVALUATE: True,
+            CONF_OUTPUT_FPS: 30,
+            CONF_FILENAME_PATTERN: "{name}_{timestamp}.mp4",
+            CONF_KEEP_FRAMES: False,
+        },
+        title="Conditional",
+    )
+    await _setup_loaded_entry(hass, entry)
+    subentry_id = next(iter(entry.subentries))
+
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, SUBENTRY_TYPE_TRIGGER),
+        context={
+            "source": config_entries.SOURCE_RECONFIGURE,
+            "subentry_id": subentry_id,
+        },
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        dict(TRIGGER_INPUT) | {CONF_NAME: "Conditional"},
+    )
+    result = await _pass_interval_step(hass, result)
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "reconfigure_successful"
+
+    subentry = entry.subentries[subentry_id]
+    assert subentry.data[CONF_CAPTURE_MODE] == CaptureMode.TIME.value
+    assert subentry.data[CONF_INTERVAL] == 30
+    assert CONF_CONDITIONAL_RULES not in subentry.data
+    assert CONF_CONDITIONAL_REEVALUATE not in subentry.data
 
 
 async def test_reconfigure_to_manual_strips_buffer_keys(hass):
