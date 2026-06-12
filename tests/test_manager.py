@@ -26,13 +26,18 @@ from custom_components.auto_time_lapse.const import (
     CONF_FALLBACK_INTERVAL,
     CONF_INTERVAL,
     CONF_KEEP_FRAMES,
+    CONF_MAX_WIDTH,
     CONF_OUTPUT_DIR,
     CONF_RULE_CONDITIONS,
+    CONF_SCALE_MODE,
     CONF_TARGET_LENGTH,
     CONF_TRIGGER_MODE,
     CONF_VALUE_DELTA,
     CONF_VALUE_DIRECTION,
     CONF_VALUE_ENTITY,
+    CONF_VIDEO_CRF,
+    CONF_VIDEO_PRESET,
+    CONF_VIDEO_QUALITY,
     CONF_WATCH_ENTITY,
     CONF_WATCH_STATES,
     DOMAIN,
@@ -44,9 +49,11 @@ from custom_components.auto_time_lapse.const import (
     CaptureMode,
     DurationType,
     EndBufferMode,
+    ScaleMode,
     SessionState,
     TriggerMode,
     ValueDirection,
+    VideoQuality,
 )
 
 from .conftest import (
@@ -1203,3 +1210,130 @@ async def test_switch_reflects_and_controls_capture(
     await hass.async_block_till_done(wait_background_tasks=True)
     assert hass.states.get(switch_id).state == STATE_OFF
     mock_render.assert_called_once()
+
+
+async def _run_capture_cycle(hass) -> None:
+    """Start a session, capture the immediate frame, and stop to render."""
+    device_id = get_device_id(hass)
+    await hass.services.async_call(
+        DOMAIN, SERVICE_START, {ATTR_DEVICE_ID: device_id}, blocking=True
+    )
+    await hass.async_block_till_done(wait_background_tasks=True)
+    await hass.services.async_call(
+        DOMAIN, SERVICE_STOP, {ATTR_DEVICE_ID: device_id}, blocking=True
+    )
+    await hass.async_block_till_done(wait_background_tasks=True)
+
+
+async def test_capture_default_no_scaling(
+    hass, mock_entry, mock_camera_image, mock_render
+):
+    """Without scaling, snapshots are requested at native resolution."""
+    await setup_integration(hass, mock_entry)
+    await _run_capture_cycle(hass)
+    kwargs = mock_camera_image.call_args.kwargs
+    assert "width" not in kwargs
+    assert "height" not in kwargs
+
+
+async def test_capture_scaling_passes_dimensions(
+    hass, base_trigger_data, mock_camera_image, mock_render
+):
+    """Capture-time scaling asks the camera for a bounded snapshot size."""
+    entry = make_entry(
+        base_trigger_data,
+        options={CONF_SCALE_MODE: ScaleMode.CAPTURE.value, CONF_MAX_WIDTH: 640},
+    )
+    await setup_integration(hass, entry)
+    await _run_capture_cycle(hass)
+    kwargs = mock_camera_image.call_args.kwargs
+    assert kwargs["width"] == 640
+    assert kwargs["height"] == 360
+    # The renderer still clamps: capture scaling is best-effort.
+    assert mock_render.call_args.kwargs["max_width"] == 640
+
+
+async def test_render_default_params(
+    hass, mock_entry, mock_camera_image, mock_render
+):
+    """With nothing configured, the historical encoder settings are used."""
+    await setup_integration(hass, mock_entry)
+    await _run_capture_cycle(hass)
+    assert mock_render.call_args.kwargs == {
+        "crf": 23,
+        "preset": "medium",
+        "max_width": None,
+    }
+
+
+async def test_service_level_quality_applies(
+    hass, base_trigger_data, mock_camera_image, mock_render
+):
+    """A quality level on the camera entry applies to its triggers."""
+    entry = make_entry(
+        base_trigger_data, options={CONF_VIDEO_QUALITY: VideoQuality.HIGH.value}
+    )
+    await setup_integration(hass, entry)
+    await _run_capture_cycle(hass)
+    assert mock_render.call_args.kwargs["crf"] == 19
+    assert mock_render.call_args.kwargs["preset"] == "slow"
+
+
+async def test_trigger_override_beats_service_default(
+    hass, base_trigger_data, mock_camera_image, mock_render
+):
+    """A trigger-level quality wins over the camera entry's default."""
+    entry = make_entry(
+        base_trigger_data | {CONF_VIDEO_QUALITY: VideoQuality.MAXIMUM.value},
+        options={CONF_VIDEO_QUALITY: VideoQuality.LOW.value},
+    )
+    await setup_integration(hass, entry)
+    await _run_capture_cycle(hass)
+    assert mock_render.call_args.kwargs["crf"] == 16
+    assert mock_render.call_args.kwargs["preset"] == "slower"
+
+
+async def test_custom_quality_resolution(
+    hass, base_trigger_data, mock_camera_image, mock_render
+):
+    """The custom level passes its raw CRF and preset through."""
+    entry = make_entry(
+        base_trigger_data
+        | {
+            CONF_VIDEO_QUALITY: VideoQuality.CUSTOM.value,
+            CONF_VIDEO_CRF: 28,
+            CONF_VIDEO_PRESET: "veryfast",
+        }
+    )
+    await setup_integration(hass, entry)
+    await _run_capture_cycle(hass)
+    assert mock_render.call_args.kwargs["crf"] == 28
+    assert mock_render.call_args.kwargs["preset"] == "veryfast"
+
+
+async def test_render_scale_mode_passes_width(
+    hass, base_trigger_data, mock_camera_image, mock_render
+):
+    """Render-time scaling leaves snapshots alone and clamps in ffmpeg."""
+    entry = make_entry(
+        base_trigger_data,
+        options={CONF_SCALE_MODE: ScaleMode.RENDER.value, CONF_MAX_WIDTH: 640},
+    )
+    await setup_integration(hass, entry)
+    await _run_capture_cycle(hass)
+    assert "width" not in mock_camera_image.call_args.kwargs
+    assert mock_render.call_args.kwargs["max_width"] == 640
+
+
+async def test_trigger_scale_off_overrides_service_scaling(
+    hass, base_trigger_data, mock_camera_image, mock_render
+):
+    """An explicit off override disables the camera entry's scaling."""
+    entry = make_entry(
+        base_trigger_data | {CONF_SCALE_MODE: ScaleMode.OFF.value},
+        options={CONF_SCALE_MODE: ScaleMode.CAPTURE.value, CONF_MAX_WIDTH: 640},
+    )
+    await setup_integration(hass, entry)
+    await _run_capture_cycle(hass)
+    assert "width" not in mock_camera_image.call_args.kwargs
+    assert mock_render.call_args.kwargs["max_width"] is None
