@@ -29,7 +29,7 @@
   - **Entity state watch** — pick any entity and the states that mean *recording* (e.g. a 3D printer's `printing`). The video renders itself when the state ends — even if the device drops offline mid-job.
 - 🎞️ **Four capture cadences** — frames every N seconds, frames computed to **fit a target video length** (a 10-minute or 10-hour print both come out as the same 15-second clip), **frames paced by a numeric entity**: one frame per 3D-printer layer, per 0.5 kWh on an energy meter, per km of a trip — any float step, rising, falling, or both — or **conditional rules** that pick between cadences with Home Assistant conditions, live, mid-session.
 - 🎬 **Real videos, instantly playable** — H.264 MP4 with faststart, written to your media folder so it appears in HA's Media Browser. NAS shares mounted via *Settings → System → Storage* work out of the box.
-- 🧹 **Tidy by default** — frames are deleted after a successful render (keep them if you like), and kept automatically when a render fails so nothing is lost.
+- 🧹 **Tidy by default** — frames are deleted after a successful render, or moved next to the video if you keep them, and retained automatically when a render fails so nothing is lost. See [where your files are saved](docs/save-locations.md).
 - 🔔 **Automation-friendly** — an `auto_time_lapse_finished` event with the video path, per-trigger status & frame-count sensors, and a `media_content_id` attribute ready for `media_player.play_media`.
 
 ## 🚀 Quick start
@@ -52,12 +52,12 @@ Every trigger asks for:
 | Video frame rate | Output FPS (30 fps × 60 s interval ≈ 1 s of video per 30 min) | 30 |
 | Output directory | Created automatically; empty = `<media>/auto_time_lapse/` | media folder |
 | Filename pattern | `{name}`, `{timestamp}`, `{entry_id}` placeholders | `{name}_{timestamp}.mp4` |
-| Keep frames | Keep snapshot JPEGs after rendering | off |
+| Keep frames | Keep snapshot JPEGs after rendering — saved [next to the video](docs/save-locations.md) | off |
 
 Follow-up steps depend on your choices:
 
 - **Time interval** cadence asks for the seconds between snapshots (default 60).
-- **Fit target video length** cadence asks for a duration entity (one that reports the expected total session length in seconds, like a printer's estimated print time), the target video length, and a fallback interval. When capture starts, the snapshot interval is computed once — duration ÷ (frame rate × target length), never below 1 second — and stays **fixed for the whole session**, so the finished video always comes out about the target length. If the entity can't be read as a positive number at that moment, the fallback interval is used instead.
+- **Fit target video length** cadence asks for a duration entity (one that reports the expected total session length, like a printer's estimated print time), a **duration type** (seconds, minutes, hours, or an end-time timestamp), the target video length, and a fallback interval. When capture starts, the snapshot interval is computed once — duration ÷ (frame rate × target length), never below 1 second — and stays **fixed for the whole session**, so the finished video always comes out about the target length. If the entity can't be read as a positive number at that moment, the fallback interval is used instead.
 - **Entity value change** cadence asks for a numeric entity, a step (any float > 0), and a direction (*any change* / *increase only* / *decrease only*). A frame is captured each time the value moves by at least the step since the last frame; movement against the chosen direction silently re-baselines, so a counter resetting for a new run just starts counting again.
 - **Conditional** cadence builds a list of rules, each pairing **Home Assistant conditions** (the same condition editor as automations) with its own cadence — *time interval* or *entity value change* — plus a mandatory **default** for when no rule matches. Rules are checked top to bottom and the first match wins. By default the rules **re-evaluate live during the session** (whenever a condition's entity changes, and after every frame — which also covers template/time/sun conditions): the moment another rule starts matching, the cadence switches on the fly. A toggle on the default-cadence step locks the rule in at session start instead, so it only changes at the next session. Example: layer count below 20 → a frame every 30 s; layer 20–40 → every 60 s; else → one frame per layer-count increase of 1.
 - The **schedule** trigger asks for start/end times; the **watch** trigger asks for the entity and then shows **that entity's actual states** so you pick which ones count as active (default `on`).
@@ -93,7 +93,7 @@ All services target a trigger via its device (a picker in the UI editor).
 | Service | Description |
 | --- | --- |
 | `auto_time_lapse.start` | Start a capture session |
-| `auto_time_lapse.stop` | Stop and render (`render: false` to skip) |
+| `auto_time_lapse.stop` | Stop and render the video |
 | `auto_time_lapse.render` | Re-render the most recent retained frame set |
 | `auto_time_lapse.cancel` | Abort and discard frames |
 
@@ -136,10 +136,12 @@ automation:
 
 ## 📝 Behavior notes
 
-- Working frames live under `<config>/auto_time_lapse/<trigger id>/<session>/` and never clutter the Media Browser.
+Full details on file locations and cleanup: **[Where Auto Time Lapse saves your files](docs/save-locations.md)**.
+
+- Working frames live under `<config>/auto_time_lapse/<trigger id>/<session>/` — temporary storage only, never cluttering the Media Browser. With *keep frames* on, frames move into a folder next to the finished video, named after it.
 - A failed snapshot (camera offline) is skipped and counted in `failed_frames`; the session keeps going.
 - If rendering fails, frames are kept regardless of *keep frames* so you can fix the issue and call `auto_time_lapse.render`.
-- A crash or restart mid-session is survivable: the session resumes where it left off and the final video is one continuous timelapse. This works for manual, schedule, and watch triggers alike. If the session can no longer continue — the schedule window ended or the watch entity went inactive while Home Assistant was down — the frames captured so far are rendered into a video at startup instead. Leftover frames that don't belong to an interrupted session are still cleaned at startup (unless *keep frames* is on).
+- A crash or restart mid-session is survivable: the session resumes where it left off and the final video is one continuous timelapse. This works for manual, schedule, and watch triggers alike. If the session can no longer continue — the schedule window ended or the watch entity went inactive while Home Assistant was down — the frames captured so far are rendered into a video at startup instead. Leftover frames that don't belong to an interrupted session are cleaned at startup.
 - Stopping a session immediately frees the trigger for a new one while the previous video renders in the background.
 - There is no pause/resume: if a watched device drops out mid-session, the video is completed with the frames captured so far (or, with an end delay buffer configured, after the buffer runs out).
 - The end delay buffer only applies when the trigger ends on its own; `auto_time_lapse.stop`, the capture switch, and `auto_time_lapse.cancel` always take effect immediately, ending any buffer in progress (stop renders, cancel discards).

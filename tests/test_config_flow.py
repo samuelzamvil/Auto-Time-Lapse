@@ -14,6 +14,7 @@ from custom_components.auto_time_lapse.const import (
     CONF_CONDITIONAL_REEVALUATE,
     CONF_CONDITIONAL_RULES,
     CONF_DURATION_ENTITY,
+    CONF_DURATION_TYPE,
     CONF_END_BUFFER_AMOUNT,
     CONF_END_BUFFER_INTERVAL,
     CONF_END_BUFFER_MODE,
@@ -39,6 +40,7 @@ from custom_components.auto_time_lapse.const import (
     SUBENTRY_TYPE_TRIGGER,
     BufferRetrigger,
     CaptureMode,
+    DurationType,
     EndBufferMode,
     TriggerMode,
     ValueDirection,
@@ -268,6 +270,7 @@ async def test_trigger_subentry_value_change(hass, mock_entry):
     assert subentry.data[CONF_VALUE_DELTA] == 1
     assert subentry.data[CONF_VALUE_DIRECTION] == ValueDirection.INCREASE.value
     assert CONF_INTERVAL not in subentry.data
+    assert CONF_DURATION_TYPE not in subentry.data
 
 
 async def test_trigger_subentry_fit_length(hass, mock_entry):
@@ -285,6 +288,7 @@ async def test_trigger_subentry_fit_length(hass, mock_entry):
         result["flow_id"],
         {
             CONF_DURATION_ENTITY: "sensor.print_duration",
+            CONF_DURATION_TYPE: DurationType.MINUTES.value,
             CONF_TARGET_LENGTH: 0,
             CONF_FALLBACK_INTERVAL: 30,
         },
@@ -295,6 +299,7 @@ async def test_trigger_subentry_fit_length(hass, mock_entry):
         result["flow_id"],
         {
             CONF_DURATION_ENTITY: "sensor.print_duration",
+            CONF_DURATION_TYPE: DurationType.MINUTES.value,
             CONF_TARGET_LENGTH: 10,
             CONF_FALLBACK_INTERVAL: 30,
         },
@@ -305,6 +310,7 @@ async def test_trigger_subentry_fit_length(hass, mock_entry):
     )
     assert subentry.data[CONF_CAPTURE_MODE] == CaptureMode.TIME_FIT.value
     assert subentry.data[CONF_DURATION_ENTITY] == "sensor.print_duration"
+    assert subentry.data[CONF_DURATION_TYPE] == DurationType.MINUTES.value
     assert subentry.data[CONF_TARGET_LENGTH] == 10
     assert subentry.data[CONF_FALLBACK_INTERVAL] == 30
     assert CONF_INTERVAL not in subentry.data

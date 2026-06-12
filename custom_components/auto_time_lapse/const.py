@@ -34,6 +34,7 @@ CONF_CONDITIONAL_RULES = "conditional_rules"
 CONF_CONDITIONAL_REEVALUATE = "conditional_reevaluate"
 CONF_RULE_CONDITIONS = "conditions"
 CONF_RULE_ADD_ANOTHER = "add_another"
+CONF_DURATION_TYPE = "duration_type"
 
 DEFAULT_INTERVAL = 60
 DEFAULT_TARGET_LENGTH = 30.0
@@ -57,7 +58,6 @@ SERVICE_RENDER = "render"
 SERVICE_CANCEL = "cancel"
 
 ATTR_DEVICE_ID = "device_id"
-ATTR_RENDER = "render"
 
 EVENT_TIMELAPSE_FINISHED = "auto_time_lapse_finished"
 
@@ -128,3 +128,12 @@ class BufferRetrigger(StrEnum):
 
     RESUME = "resume"
     FINISH = "finish"
+
+
+class DurationType(StrEnum):
+    """How the duration entity's state is interpreted."""
+
+    SECONDS = "seconds"
+    MINUTES = "minutes"
+    HOURS = "hours"
+    END_TIME = "end_time"
