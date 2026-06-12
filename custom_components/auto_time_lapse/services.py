@@ -12,7 +12,6 @@ import voluptuous as vol
 
 from .const import (
     ATTR_DEVICE_ID,
-    ATTR_RENDER,
     DOMAIN,
     SERVICE_CANCEL,
     SERVICE_RENDER,
@@ -24,9 +23,6 @@ if TYPE_CHECKING:
     from .manager import TimelapseManager
 
 _BASE_SCHEMA = vol.Schema({vol.Required(ATTR_DEVICE_ID): cv.string})
-_STOP_SCHEMA = _BASE_SCHEMA.extend(
-    {vol.Optional(ATTR_RENDER, default=True): cv.boolean}
-)
 
 
 def _get_manager(hass: HomeAssistant, call: ServiceCall) -> TimelapseManager:
@@ -66,7 +62,7 @@ def async_setup_services(hass: HomeAssistant) -> None:
         await _get_manager(hass, call).async_start()
 
     async def _stop(call: ServiceCall) -> None:
-        await _get_manager(hass, call).async_stop(render=call.data[ATTR_RENDER])
+        await _get_manager(hass, call).async_stop()
 
     async def _render(call: ServiceCall) -> None:
         await _get_manager(hass, call).async_rerender()
@@ -75,6 +71,6 @@ def async_setup_services(hass: HomeAssistant) -> None:
         await _get_manager(hass, call).async_cancel()
 
     hass.services.async_register(DOMAIN, SERVICE_START, _start, schema=_BASE_SCHEMA)
-    hass.services.async_register(DOMAIN, SERVICE_STOP, _stop, schema=_STOP_SCHEMA)
+    hass.services.async_register(DOMAIN, SERVICE_STOP, _stop, schema=_BASE_SCHEMA)
     hass.services.async_register(DOMAIN, SERVICE_RENDER, _render, schema=_BASE_SCHEMA)
     hass.services.async_register(DOMAIN, SERVICE_CANCEL, _cancel, schema=_BASE_SCHEMA)

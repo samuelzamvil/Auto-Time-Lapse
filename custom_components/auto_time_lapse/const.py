@@ -58,7 +58,6 @@ SERVICE_RENDER = "render"
 SERVICE_CANCEL = "cancel"
 
 ATTR_DEVICE_ID = "device_id"
-ATTR_RENDER = "render"
 
 EVENT_TIMELAPSE_FINISHED = "auto_time_lapse_finished"
 

@@ -19,6 +19,7 @@ from custom_components.auto_time_lapse.const import (
     CONF_END_BUFFER_AMOUNT,
     CONF_END_BUFFER_MODE,
     CONF_INTERVAL,
+    CONF_KEEP_FRAMES,
     CONF_RULE_CONDITIONS,
     CONF_TRIGGER_MODE,
     CONF_WATCH_ENTITY,
@@ -328,6 +329,25 @@ async def test_stale_cleanup_spares_recorded_session(
     manager = get_manager(mock_entry)
     assert not stale_dir.exists()
     # The recorded manual session resumed with its frames intact.
+    assert manager.state is SessionState.CAPTURING
+    assert manager.frame_count == 3
+
+
+async def test_stale_cleanup_runs_with_keep_frames(
+    hass, base_trigger_data, mock_camera_image, mock_render, hass_storage, tmp_path
+):
+    """The working dir self-heals at startup even with keep_frames on."""
+    _seed_session(hass_storage, tmp_path, frames=2)
+    stale_dir = _frames_base(tmp_path) / "20250101_000000_000000"
+    stale_dir.mkdir(parents=True)
+    (stale_dir / "frame_000000.jpg").write_bytes(b"stale-jpeg")
+    entry = make_entry(base_trigger_data | {CONF_KEEP_FRAMES: True})
+
+    await setup_integration(hass, entry)
+
+    manager = get_manager(entry)
+    assert not stale_dir.exists()
+    # The recorded session is spared and resumes as usual.
     assert manager.state is SessionState.CAPTURING
     assert manager.frame_count == 3
 

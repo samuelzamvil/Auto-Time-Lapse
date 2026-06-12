@@ -517,8 +517,6 @@ class TimelapseManager:
         return now >= start or now < end
 
     async def _async_cleanup_stale_frames(self, keep: set[str]) -> None:
-        if self.keep_frames:
-            return
         base = self._frames_base_dir
 
         def _cleanup() -> int:
@@ -594,7 +592,7 @@ class TimelapseManager:
         if not self._capturing or self._buffering:
             return
         if self.end_buffer_mode is EndBufferMode.OFF:
-            await self.async_stop(render=True)
+            await self.async_stop()
             return
         self._begin_buffer()
 
@@ -678,7 +676,7 @@ class TimelapseManager:
             self.end_buffer_retrigger is BufferRetrigger.FINISH
             and self._trigger_conditions_active()
         )
-        await self.async_stop(render=True)
+        await self.async_stop()
         if restart:
             await self.async_start()
 
@@ -922,8 +920,8 @@ class TimelapseManager:
         self._wire_capture_cadence()
         self._notify()
 
-    async def async_stop(self, render: bool = True) -> None:
-        """End the capture session, optionally rendering the video."""
+    async def async_stop(self) -> None:
+        """End the capture session and render the video."""
         if not self._capturing:
             return
         self._clear_buffer_state()
@@ -942,17 +940,11 @@ class TimelapseManager:
             frames,
         )
         if session_dir is not None:
-            if render and frames > 0:
+            if frames > 0:
                 await self._async_persist(
                     session_dir, SessionPhase.PENDING_RENDER, started_at
                 )
                 self.hass.async_create_task(self._async_render(session_dir, frames))
-            elif frames > 0 and self.keep_frames:
-                self._last_session_dir = session_dir
-                self._last_session_frames = frames
-                await self._store.async_remove(
-                    self.subentry.subentry_id, session_dir.name
-                )
             else:
                 await self._async_remove_dir(session_dir)
                 await self._store.async_remove(

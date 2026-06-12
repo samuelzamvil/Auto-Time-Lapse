@@ -299,10 +299,6 @@
         "device_id": {
           "name": "Trigger",
           "description": "The timelapse trigger to stop."
-        },
-        "render": {
-          "name": "Render video",
-          "description": "Render the video after stopping. If disabled, frames are discarded unless 'keep frames' is enabled."
         }
       }
     },
