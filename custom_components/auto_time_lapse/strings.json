@@ -120,11 +120,13 @@
           "title": "Fit a target video length",
           "data": {
             "duration_entity": "Duration entity",
+            "duration_type": "Duration entity reports",
             "target_length": "Target video length",
             "fallback_interval": "Fallback interval"
           },
           "data_description": {
-            "duration_entity": "Entity that reports the expected total duration of the session in seconds, for example a 3D printer's estimated print time sensor.",
+            "duration_entity": "Entity that reports the expected total duration of the session, for example a 3D printer's estimated print time sensor.",
+            "duration_type": "How to read the duration entity: as a number of seconds, minutes, or hours, or as an end-time timestamp (duration = end time minus now, computed once at session start).",
             "target_length": "Desired length of the finished video. The capture interval is computed once when the session starts (duration divided by frame rate times this length, never below 1 second) and stays fixed for the whole session.",
             "fallback_interval": "Seconds between snapshots when the duration entity cannot be read as a positive number at session start."
           }
@@ -202,6 +204,14 @@
     }
   },
   "selector": {
+    "duration_type": {
+      "options": {
+        "seconds": "Duration in seconds",
+        "minutes": "Duration in minutes",
+        "hours": "Duration in hours",
+        "end_time": "End time (timestamp)"
+      }
+    },
     "trigger_mode": {
       "options": {
         "manual": "Manual (switch and services)",
@@ -265,6 +275,9 @@
       },
       "last_video": {
         "name": "Last video"
+      },
+      "capture_interval": {
+        "name": "Capture interval"
       }
     }
   },

@@ -39,6 +39,7 @@ from .const import (
     CONF_CONDITIONAL_REEVALUATE,
     CONF_CONDITIONAL_RULES,
     CONF_DURATION_ENTITY,
+    CONF_DURATION_TYPE,
     CONF_END_BUFFER_AMOUNT,
     CONF_END_BUFFER_INTERVAL,
     CONF_END_BUFFER_MODE,
@@ -74,6 +75,7 @@ from .const import (
     SUBENTRY_TYPE_TRIGGER,
     BufferRetrigger,
     CaptureMode,
+    DurationType,
     EndBufferMode,
     TriggerMode,
     ValueDirection,
@@ -366,6 +368,15 @@ class TriggerSubentryFlow(ConfigSubentryFlow):
         schema = vol.Schema(
             {
                 vol.Required(CONF_DURATION_ENTITY): EntitySelector(),
+                vol.Required(
+                    CONF_DURATION_TYPE, default=DurationType.SECONDS.value
+                ): SelectSelector(
+                    SelectSelectorConfig(
+                        options=[t.value for t in DurationType],
+                        mode=SelectSelectorMode.DROPDOWN,
+                        translation_key="duration_type",
+                    )
+                ),
                 vol.Required(
                     CONF_TARGET_LENGTH, default=DEFAULT_TARGET_LENGTH
                 ): vol.All(
@@ -691,6 +702,7 @@ class TriggerSubentryFlow(ConfigSubentryFlow):
             data.pop(CONF_INTERVAL, None)
         if cadence != CaptureMode.TIME_FIT:
             data.pop(CONF_DURATION_ENTITY, None)
+            data.pop(CONF_DURATION_TYPE, None)
             data.pop(CONF_TARGET_LENGTH, None)
             data.pop(CONF_FALLBACK_INTERVAL, None)
         if cadence != CaptureMode.VALUE_CHANGE:

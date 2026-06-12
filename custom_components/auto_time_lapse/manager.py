@@ -45,6 +45,7 @@ from .const import (
     CONF_CONDITIONAL_REEVALUATE,
     CONF_CONDITIONAL_RULES,
     CONF_DURATION_ENTITY,
+    CONF_DURATION_TYPE,
     CONF_END_BUFFER_AMOUNT,
     CONF_END_BUFFER_INTERVAL,
     CONF_END_BUFFER_MODE,
@@ -82,6 +83,7 @@ from .const import (
     SNAPSHOT_TIMEOUT,
     BufferRetrigger,
     CaptureMode,
+    DurationType,
     EndBufferMode,
     SessionPhase,
     SessionState,
@@ -92,6 +94,12 @@ from .renderer import RenderError, async_render_timelapse
 from .storage import SessionRecord, SessionStore, async_get_session_store
 
 _LOGGER = logging.getLogger(__name__)
+
+_DURATION_MULTIPLIER = {
+    DurationType.SECONDS: 1.0,
+    DurationType.MINUTES: 60.0,
+    DurationType.HOURS: 3600.0,
+}
 
 
 def _scan_existing_frames(session_dir: Path) -> int:
@@ -191,6 +199,15 @@ class TimelapseManager:
     @property
     def duration_entity(self) -> str | None:
         return self._options.get(CONF_DURATION_ENTITY)
+
+    @property
+    def duration_type(self) -> DurationType:
+        try:
+            return DurationType(
+                self._options.get(CONF_DURATION_TYPE, DurationType.SECONDS)
+            )
+        except ValueError:
+            return DurationType.SECONDS
 
     @property
     def target_length(self) -> float:
@@ -293,6 +310,19 @@ class TimelapseManager:
     @property
     def is_capturing(self) -> bool:
         return self._capturing
+
+    @property
+    def capture_interval(self) -> float | None:
+        """Seconds between snapshots currently in effect; None when not time-paced."""
+        if not self._capturing:
+            return None
+        if self._buffering and self._buffer_cadence_rewired:
+            return float(self.end_buffer_interval or self.interval)
+        if self._effective_value_change():
+            return None
+        if self.capture_mode is CaptureMode.CONDITIONAL:
+            return float(self.interval)
+        return self._session_capture_seconds
 
     @property
     def media_content_id(self) -> str | None:
@@ -890,6 +920,7 @@ class TimelapseManager:
         )
         self._cancel_capture_listener()
         self._wire_capture_cadence()
+        self._notify()
 
     async def async_stop(self, render: bool = True) -> None:
         """End the capture session, optionally rendering the video."""
@@ -1023,10 +1054,10 @@ class TimelapseManager:
         """Return the seconds between snapshots for this session."""
         if self.capture_mode is not CaptureMode.TIME_FIT:
             return float(self.interval)
-        duration = self._read_float(self.duration_entity)
+        duration = self._read_duration_seconds()
         if duration is None or duration <= 0:
             _LOGGER.warning(
-                "%s: duration entity %s is not a positive number; "
+                "%s: duration entity %s did not yield a positive duration; "
                 "falling back to %d s between snapshots",
                 self.title,
                 self.duration_entity,
@@ -1044,6 +1075,29 @@ class TimelapseManager:
             )
             return 1.0
         return seconds
+
+    def _read_duration_seconds(self) -> float | None:
+        """Return the session duration in seconds from the configured entity."""
+        if self.duration_type is DurationType.END_TIME:
+            return self._read_end_time_remaining()
+        value = self._read_float(self.duration_entity)
+        if value is None:
+            return None
+        return value * _DURATION_MULTIPLIER[self.duration_type]
+
+    def _read_end_time_remaining(self) -> float | None:
+        """Return seconds until the end-time entity's timestamp."""
+        if not self.duration_entity:
+            return None
+        state = self.hass.states.get(self.duration_entity)
+        if state is None:
+            return None
+        end = dt_util.parse_datetime(state.state)
+        if end is None:
+            return None
+        if end.tzinfo is None:
+            end = dt_util.as_utc(end)
+        return (end - dt_util.utcnow()).total_seconds()
 
     def _read_float(self, entity_id: str | None) -> float | None:
         """Return an entity's state as a float, if numeric."""
