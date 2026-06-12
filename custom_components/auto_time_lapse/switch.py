@@ -41,4 +41,4 @@ class TimelapseCaptureSwitch(AutoTimeLapseEntity, SwitchEntity):
         await self._manager.async_start()
 
     async def async_turn_off(self, **kwargs: Any) -> None:
-        await self._manager.async_stop(render=True)
+        await self._manager.async_stop()

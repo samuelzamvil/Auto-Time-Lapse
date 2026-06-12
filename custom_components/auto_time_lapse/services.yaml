@@ -13,11 +13,6 @@ stop:
       selector:
         device:
           integration: auto_time_lapse
-    render:
-      required: false
-      default: true
-      selector:
-        boolean:
 
 render:
   fields:
