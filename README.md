@@ -42,8 +42,6 @@
 
 ## 🎛️ Trigger options
 
-A condensed tour follows; the **[configuration reference](docs/configuration.md)** documents every option, step by step, with all defaults.
-
 Every trigger asks for:
 
 | Option | Description | Default |
@@ -71,7 +69,7 @@ Triggers can be reconfigured or deleted individually at any time.
 
 ### 🎚️ Video & image quality
 
-Quality settings live at **two levels**: the **Configure** button on the camera entry sets the defaults for every trigger on that camera, and each trigger can override them — the trigger form's quality fields default to *Use service default*. With nothing configured anywhere, the behavior is the same as previous releases (CRF 23, `medium` preset, native resolution).
+Quality settings live at **two levels**: the **Configure** button on the camera entry sets the defaults for every trigger on that camera, and each trigger can override them — the trigger form's quality fields default to *Use service default*. With nothing configured anywhere, the behavior is the same as previous releases (CRF 23, `medium` preset, native resolution). Full details: **[Video quality and image scaling](docs/video-quality.md)**.
 
 **Video quality** picks the x264 encoder settings for the finished MP4:
 
@@ -91,7 +89,7 @@ Higher quality means larger files and a slower render. *Custom* opens an extra s
 - **During render** *(recommended)* — frames are stored at full size and ffmpeg downscales once while rendering the video. Costs nothing until the one-time render pass.
 - **During capture** — Home Assistant scales every snapshot the moment it is taken, so smaller frames hit the disk. ⚠️ This decodes and re-encodes each JPEG **on every single frame for the whole session**, costing CPU per snapshot — use it only when frame disk usage matters. It is also best-effort: it needs TurboJPEG and a JPEG-delivering camera, and scaling lands on the nearest supported factor. The render-time clamp still runs afterwards, so the final video always respects the maximum width either way.
 
-A trigger that overrides the scaling mode uses its own maximum width; a trigger that inherits the mode also inherits the width. The full resolution rules are in the [configuration reference](docs/configuration.md#video-quality-and-image-scaling-overrides).
+A trigger that overrides the scaling mode uses its own maximum width; a trigger that inherits the mode also inherits the width. The full resolution rules are in [Video quality and image scaling](docs/video-quality.md#per-trigger-overrides-and-resolution-rules).
 
 ### 🖨️ Example: 3D-printer timelapse (one frame per layer)
 
@@ -164,7 +162,7 @@ automation:
 
 ## 📝 Behavior notes
 
-Full details on file locations and cleanup: **[Where Auto Time Lapse saves your files](docs/save-locations.md)**. Every configurable option, with defaults: **[Configuration reference](docs/configuration.md)**.
+Full details on file locations and cleanup: **[Where Auto Time Lapse saves your files](docs/save-locations.md)**. Quality and scaling settings: **[Video quality and image scaling](docs/video-quality.md)**.
 
 - Working frames live under `<config>/auto_time_lapse/<trigger id>/<session>/` — temporary storage only, never cluttering the Media Browser. With *keep frames* on, frames move into a folder next to the finished video, named after it.
 - A failed snapshot (camera offline) is skipped and counted in `failed_frames`; the session keeps going.
