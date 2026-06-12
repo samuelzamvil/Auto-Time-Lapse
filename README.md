@@ -52,7 +52,7 @@ Every trigger asks for:
 | Video frame rate | Output FPS (30 fps × 60 s interval ≈ 1 s of video per 30 min) | 30 |
 | Output directory | Created automatically; empty = `<media>/auto_time_lapse/` | media folder |
 | Filename pattern | `{name}`, `{timestamp}`, `{entry_id}` placeholders | `{name}_{timestamp}.mp4` |
-| Keep frames | Keep snapshot JPEGs after rendering | off |
+| Keep frames | Keep snapshot JPEGs after rendering — saved [next to the video](docs/save-locations.md) | off |
 
 Follow-up steps depend on your choices:
 
