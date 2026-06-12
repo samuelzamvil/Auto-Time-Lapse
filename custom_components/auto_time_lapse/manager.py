@@ -1242,7 +1242,9 @@ class TimelapseManager:
                     "Timelapse for %s saved to %s", self.title, output_path
                 )
                 if self.keep_frames:
-                    self._last_session_dir = session_dir
+                    self._last_session_dir = await self._async_archive_frames(
+                        session_dir, output_path
+                    )
                     self._last_session_frames = frames
                 else:
                     await self._async_remove_dir(session_dir)
@@ -1298,6 +1300,40 @@ class TimelapseManager:
         await self.hass.async_add_executor_job(
             partial(shutil.rmtree, path, ignore_errors=True)
         )
+
+    async def _async_archive_frames(
+        self, session_dir: Path, output_path: Path
+    ) -> Path:
+        """Move kept frames into <output dir>/<video stem>/ and return that dir.
+
+        The working dir under the config folder is temporary storage only;
+        kept frames belong next to the video where the user can see them.
+        On failure the frames are left where they are and session_dir is
+        returned.
+        """
+        dest = output_path.parent / output_path.stem
+        if dest == session_dir:
+            return session_dir
+
+        def _move() -> None:
+            dest.mkdir(parents=True, exist_ok=True)
+            for frame in sorted(session_dir.glob("frame_*.jpg")):
+                shutil.move(str(frame), str(dest / frame.name))
+            # Only reached once every frame moved; the dir is expendable now.
+            shutil.rmtree(session_dir, ignore_errors=True)
+
+        try:
+            await self.hass.async_add_executor_job(_move)
+        except (OSError, shutil.Error) as err:
+            _LOGGER.warning(
+                "Could not move kept frames for %s from %s to %s: %s",
+                self.title,
+                session_dir,
+                dest,
+                err,
+            )
+            return session_dir
+        return dest
 
     # ------------------------------------------------------------------ listeners
 

@@ -25,6 +25,8 @@ from custom_components.auto_time_lapse.const import (
     CONF_END_BUFFER_RETRIGGER,
     CONF_FALLBACK_INTERVAL,
     CONF_INTERVAL,
+    CONF_KEEP_FRAMES,
+    CONF_OUTPUT_DIR,
     CONF_RULE_CONDITIONS,
     CONF_TARGET_LENGTH,
     CONF_TRIGGER_MODE,
@@ -150,6 +152,78 @@ async def test_cancel_discards_frames(
     assert manager.state is SessionState.IDLE
     mock_render.assert_not_called()
     assert not list(_frames_dir(tmp_path).rglob("*.jpg"))
+
+
+async def test_keep_frames_moved_to_output_dir(
+    hass, base_trigger_data, mock_camera_image, mock_render, tmp_path
+):
+    """With keep_frames, frames move next to the video after rendering."""
+    output_dir = tmp_path / "output"
+    entry = make_entry(
+        base_trigger_data
+        | {CONF_KEEP_FRAMES: True, CONF_OUTPUT_DIR: str(output_dir)}
+    )
+    await setup_integration(hass, entry)
+    manager = get_manager(entry)
+    device_id = get_device_id(hass)
+
+    with patch.object(hass.config, "is_allowed_path", return_value=True):
+        await hass.services.async_call(
+            DOMAIN, SERVICE_START, {ATTR_DEVICE_ID: device_id}, blocking=True
+        )
+        await hass.async_block_till_done(wait_background_tasks=True)
+        async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=61))
+        await hass.async_block_till_done(wait_background_tasks=True)
+        assert manager.frame_count == 2
+
+        await hass.services.async_call(
+            DOMAIN, SERVICE_STOP, {ATTR_DEVICE_ID: device_id}, blocking=True
+        )
+        await hass.async_block_till_done(wait_background_tasks=True)
+
+    mock_render.assert_called_once()
+    video = Path(manager.last_video_path)
+    assert video.parent == output_dir
+    frames_dest = video.parent / video.stem
+    assert len(list(frames_dest.glob("frame_*.jpg"))) == 2
+    # The working dir under the config folder holds nothing afterwards.
+    frames_dir = _frames_dir(tmp_path)
+    assert not frames_dir.exists() or not any(frames_dir.iterdir())
+    # Rerender finds the retained frames at their new home.
+    assert manager._last_session_dir == frames_dest
+
+
+async def test_keep_frames_move_failure_leaves_frames(
+    hass, base_trigger_data, mock_camera_image, mock_render, tmp_path
+):
+    """A failed move leaves the frames in the working dir, not lost."""
+    output_dir = tmp_path / "output"
+    entry = make_entry(
+        base_trigger_data
+        | {CONF_KEEP_FRAMES: True, CONF_OUTPUT_DIR: str(output_dir)}
+    )
+    await setup_integration(hass, entry)
+    manager = get_manager(entry)
+    device_id = get_device_id(hass)
+
+    with patch.object(hass.config, "is_allowed_path", return_value=True):
+        await hass.services.async_call(
+            DOMAIN, SERVICE_START, {ATTR_DEVICE_ID: device_id}, blocking=True
+        )
+        await hass.async_block_till_done(wait_background_tasks=True)
+        with patch(
+            "custom_components.auto_time_lapse.manager.shutil.move",
+            side_effect=OSError("disk full"),
+        ):
+            await hass.services.async_call(
+                DOMAIN, SERVICE_STOP, {ATTR_DEVICE_ID: device_id}, blocking=True
+            )
+            await hass.async_block_till_done(wait_background_tasks=True)
+
+    mock_render.assert_called_once()
+    assert len(list(_frames_dir(tmp_path).rglob("frame_*.jpg"))) == 1
+    assert manager._last_session_dir is not None
+    assert manager._last_session_dir.parent == _frames_dir(tmp_path)
 
 
 async def test_watch_custom_states(
