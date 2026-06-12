@@ -54,9 +54,11 @@ from .const import (
     CONF_FILENAME_PATTERN,
     CONF_INTERVAL,
     CONF_KEEP_FRAMES,
+    CONF_MAX_WIDTH,
     CONF_OUTPUT_DIR,
     CONF_OUTPUT_FPS,
     CONF_RULE_CONDITIONS,
+    CONF_SCALE_MODE,
     CONF_SCHEDULE_END,
     CONF_SCHEDULE_START,
     CONF_TARGET_LENGTH,
@@ -64,6 +66,9 @@ from .const import (
     CONF_VALUE_DELTA,
     CONF_VALUE_DIRECTION,
     CONF_VALUE_ENTITY,
+    CONF_VIDEO_CRF,
+    CONF_VIDEO_PRESET,
+    CONF_VIDEO_QUALITY,
     CONF_WATCH_ENTITY,
     CONF_WATCH_STATES,
     DEFAULT_CONDITIONAL_REEVALUATE,
@@ -75,20 +80,25 @@ from .const import (
     DEFAULT_OUTPUT_FPS,
     DEFAULT_TARGET_LENGTH,
     DEFAULT_VALUE_DELTA,
+    DEFAULT_VIDEO_CRF,
+    DEFAULT_VIDEO_PRESET,
     DOMAIN,
     EVENT_TIMELAPSE_FINISHED,
     FRAME_FILENAME,
     MAX_LOGGED_FAILURES,
     OUTPUT_SUBDIR,
     SNAPSHOT_TIMEOUT,
+    VIDEO_QUALITY_PARAMS,
     BufferRetrigger,
     CaptureMode,
     DurationType,
     EndBufferMode,
+    ScaleMode,
     SessionPhase,
     SessionState,
     TriggerMode,
     ValueDirection,
+    VideoQuality,
 )
 from .renderer import RenderError, async_render_timelapse
 from .storage import SessionRecord, SessionStore, async_get_session_store
@@ -262,6 +272,41 @@ class TimelapseManager:
     @property
     def keep_frames(self) -> bool:
         return bool(self._options.get(CONF_KEEP_FRAMES, DEFAULT_KEEP_FRAMES))
+
+    @property
+    def video_params(self) -> tuple[int, str]:
+        """(crf, preset): trigger override -> service default -> built-in."""
+        for source in (self.subentry.data, self.entry.options):
+            quality = source.get(CONF_VIDEO_QUALITY)
+            if quality is None:
+                continue
+            if quality == VideoQuality.CUSTOM:
+                return (
+                    int(source.get(CONF_VIDEO_CRF, DEFAULT_VIDEO_CRF)),
+                    str(source.get(CONF_VIDEO_PRESET, DEFAULT_VIDEO_PRESET)),
+                )
+            try:
+                return VIDEO_QUALITY_PARAMS[VideoQuality(quality)]
+            except (KeyError, ValueError):
+                break
+        return (DEFAULT_VIDEO_CRF, DEFAULT_VIDEO_PRESET)
+
+    @property
+    def scaling(self) -> tuple[ScaleMode, int | None]:
+        """(mode, max_width), both resolved from the same config level."""
+        for source in (self.subentry.data, self.entry.options):
+            raw = source.get(CONF_SCALE_MODE)
+            if raw is None:
+                continue
+            try:
+                mode = ScaleMode(raw)
+            except ValueError:
+                break
+            width = source.get(CONF_MAX_WIDTH)
+            if mode is ScaleMode.OFF or not width:
+                return (ScaleMode.OFF, None)
+            return (mode, int(width))
+        return (ScaleMode.OFF, None)
 
     @property
     def watch_states(self) -> list[str]:
@@ -1153,9 +1198,22 @@ class TimelapseManager:
             return
         self._capture_in_flight = True
         session_dir = self._session_dir
+        mode, max_width = self.scaling
+        size_kwargs: dict[str, int] = {}
+        if mode is ScaleMode.CAPTURE and max_width:
+            # HA only downscales when both dimensions are given; the pair is
+            # a lower bound, so the 16:9 companion height keeps the width as
+            # the effective constraint for typical cameras.
+            size_kwargs = {
+                "width": max_width,
+                "height": max(1, max_width * 9 // 16),
+            }
         try:
             image = await async_get_image(
-                self.hass, self.camera_entity, timeout=SNAPSHOT_TIMEOUT
+                self.hass,
+                self.camera_entity,
+                timeout=SNAPSHOT_TIMEOUT,
+                **size_kwargs,
             )
         except HomeAssistantError as err:
             self.failed_frame_count += 1
@@ -1206,8 +1264,19 @@ class TimelapseManager:
                     self.title,
                     output_path,
                 )
+                crf, preset = self.video_params
+                # Capture-time scaling is best-effort (the camera may ignore
+                # the size hint), so the renderer clamps for both modes; it
+                # also normalizes mixed frame sizes within a session.
+                _, max_width = self.scaling
                 await async_render_timelapse(
-                    self.hass, session_dir, output_path, self.output_fps
+                    self.hass,
+                    session_dir,
+                    output_path,
+                    self.output_fps,
+                    crf=crf,
+                    preset=preset,
+                    max_width=max_width,
                 )
             except (RenderError, HomeAssistantError) as err:
                 _LOGGER.error(

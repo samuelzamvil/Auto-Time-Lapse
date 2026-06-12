@@ -35,6 +35,15 @@ CONF_CONDITIONAL_REEVALUATE = "conditional_reevaluate"
 CONF_RULE_CONDITIONS = "conditions"
 CONF_RULE_ADD_ANOTHER = "add_another"
 CONF_DURATION_TYPE = "duration_type"
+CONF_VIDEO_QUALITY = "video_quality"
+CONF_VIDEO_CRF = "video_crf"
+CONF_VIDEO_PRESET = "video_preset"
+CONF_SCALE_MODE = "scale_mode"
+CONF_MAX_WIDTH = "max_width"
+
+# Trigger-level select option meaning "inherit the camera entry's setting".
+# Pruned in TriggerSubentryFlow._finish() and therefore never persisted.
+OPTION_SERVICE_DEFAULT = "service_default"
 
 DEFAULT_INTERVAL = 60
 DEFAULT_TARGET_LENGTH = 30.0
@@ -45,6 +54,8 @@ DEFAULT_FILENAME_PATTERN = "{name}_{timestamp}.mp4"
 DEFAULT_KEEP_FRAMES = False
 DEFAULT_END_BUFFER_AMOUNT = 10
 DEFAULT_CONDITIONAL_REEVALUATE = True
+DEFAULT_VIDEO_CRF = 23
+DEFAULT_VIDEO_PRESET = "medium"
 
 # Frames-mode buffer watchdog: end the buffer after
 # amount * interval * factor seconds (at least the minimum) even if the
@@ -137,3 +148,43 @@ class DurationType(StrEnum):
     MINUTES = "minutes"
     HOURS = "hours"
     END_TIME = "end_time"
+
+
+class VideoQuality(StrEnum):
+    """Encoding quality of the finished video."""
+
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    MAXIMUM = "maximum"
+    CUSTOM = "custom"
+
+
+# (crf, preset) per quality level. MEDIUM must stay equal to the historical
+# hardcoded encoder settings so "unset" and "medium" behave identically.
+VIDEO_QUALITY_PARAMS: dict[VideoQuality, tuple[int, str]] = {
+    VideoQuality.LOW: (30, "faster"),
+    VideoQuality.MEDIUM: (DEFAULT_VIDEO_CRF, DEFAULT_VIDEO_PRESET),
+    VideoQuality.HIGH: (19, "slow"),
+    VideoQuality.MAXIMUM: (16, "slower"),
+}
+
+FFMPEG_PRESETS = [
+    "ultrafast",
+    "superfast",
+    "veryfast",
+    "faster",
+    "fast",
+    "medium",
+    "slow",
+    "slower",
+    "veryslow",
+]
+
+
+class ScaleMode(StrEnum):
+    """Where frames are downscaled to the maximum width, if anywhere."""
+
+    OFF = "off"
+    CAPTURE = "capture"
+    RENDER = "render"

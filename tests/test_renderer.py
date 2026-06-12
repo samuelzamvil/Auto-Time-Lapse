@@ -44,8 +44,62 @@ async def test_render_builds_expected_command(hass):
         "scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p"
     )
     assert argv[argv.index("-c:v") + 1] == "libx264"
+    assert argv[argv.index("-preset") + 1] == "medium"
+    assert argv[argv.index("-crf") + 1] == "23"
     assert argv[argv.index("-movflags") + 1] == "+faststart"
     assert argv[-1] == "/out/video.mp4"
+
+
+async def test_render_custom_quality_args(hass):
+    """Explicit crf and preset values land in the ffmpeg command."""
+    proc = _mock_proc(0)
+    with (
+        patch(
+            "custom_components.auto_time_lapse.renderer.get_ffmpeg_manager"
+        ) as mock_manager,
+        patch(
+            "asyncio.create_subprocess_exec", new=AsyncMock(return_value=proc)
+        ) as mock_exec,
+    ):
+        mock_manager.return_value.binary = "ffmpeg"
+        await async_render_timelapse(
+            hass,
+            Path("/frames"),
+            Path("/out/video.mp4"),
+            fps=30,
+            crf=19,
+            preset="slow",
+        )
+
+    argv = list(mock_exec.call_args.args)
+    assert argv[argv.index("-preset") + 1] == "slow"
+    assert argv[argv.index("-crf") + 1] == "19"
+
+
+async def test_render_max_width_filter(hass):
+    """A max width swaps in a clamping, aspect-preserving scale filter."""
+    proc = _mock_proc(0)
+    with (
+        patch(
+            "custom_components.auto_time_lapse.renderer.get_ffmpeg_manager"
+        ) as mock_manager,
+        patch(
+            "asyncio.create_subprocess_exec", new=AsyncMock(return_value=proc)
+        ) as mock_exec,
+    ):
+        mock_manager.return_value.binary = "ffmpeg"
+        await async_render_timelapse(
+            hass,
+            Path("/frames"),
+            Path("/out/video.mp4"),
+            fps=30,
+            max_width=1280,
+        )
+
+    argv = list(mock_exec.call_args.args)
+    assert argv[argv.index("-vf") + 1] == (
+        "scale=trunc(min(iw\\,1280)/2)*2:-2,format=yuv420p"
+    )
 
 
 async def test_render_failure_raises(hass):

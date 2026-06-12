@@ -53,6 +53,8 @@ Every trigger asks for:
 | Output directory | Created automatically; empty = `<media>/auto_time_lapse/` | media folder |
 | Filename pattern | `{name}`, `{timestamp}`, `{entry_id}` placeholders | `{name}_{timestamp}.mp4` |
 | Keep frames | Keep snapshot JPEGs after rendering — saved [next to the video](docs/save-locations.md) | off |
+| Video quality | Low / Medium / High / Maximum / Custom (raw CRF + preset) | service default |
+| Image scaling | Off / During capture / During render, plus a maximum width | service default |
 
 Follow-up steps depend on your choices:
 
@@ -64,6 +66,30 @@ Follow-up steps depend on your choices:
 - Schedule and watch triggers then offer an **end delay buffer**: keep capturing a number of **extra frames** or **extra seconds** after the trigger ends, before the video renders — catch the build plate presenting the finished print, or the scene settling down. Optionally the buffer uses its **own snapshot interval**, overriding the session cadence (when the session can be paced by entity value changes — the *entity value change* cadence, or a *conditional* cadence with a value-change rule — the buffer is time-based, so the buffer interval is required there). You also choose what a re-trigger during the buffer does: **resume** the same session (which doubles as a debounce against a flapping entity) or **finish** the buffer, render, and start a fresh session.
 
 Triggers can be reconfigured or deleted individually at any time.
+
+### 🎚️ Video & image quality
+
+Quality settings live at **two levels**: the **Configure** button on the camera entry sets the defaults for every trigger on that camera, and each trigger can override them — the trigger form's quality fields default to *Use service default*. With nothing configured anywhere, the behavior is the same as previous releases (CRF 23, `medium` preset, native resolution). Full details: **[Video quality and image scaling](docs/video-quality.md)**.
+
+**Video quality** picks the x264 encoder settings for the finished MP4:
+
+| Level | CRF | Preset |
+| --- | --- | --- |
+| Low | 30 | faster |
+| Medium (default) | 23 | medium |
+| High | 19 | slow |
+| Maximum | 16 | slower |
+| Custom | your CRF (0–51) | your preset |
+
+Higher quality means larger files and a slower render. *Custom* opens an extra step where you set the raw CRF and preset yourself.
+
+**Image scaling** downscales to a maximum width (aspect ratio preserved, never upscaled):
+
+- **Off** — frames and video keep the camera's native resolution.
+- **During render** *(recommended)* — frames are stored at full size and ffmpeg downscales once while rendering the video. Costs nothing until the one-time render pass.
+- **During capture** — Home Assistant scales every snapshot the moment it is taken, so smaller frames hit the disk. ⚠️ This decodes and re-encodes each JPEG **on every single frame for the whole session**, costing CPU per snapshot — use it only when frame disk usage matters. It is also best-effort: it needs TurboJPEG and a JPEG-delivering camera, and scaling lands on the nearest supported factor. The render-time clamp still runs afterwards, so the final video always respects the maximum width either way.
+
+A trigger that overrides the scaling mode uses its own maximum width; a trigger that inherits the mode also inherits the width. The full resolution rules are in [Video quality and image scaling](docs/video-quality.md#per-trigger-overrides-and-resolution-rules).
 
 ### 🖨️ Example: 3D-printer timelapse (one frame per layer)
 
@@ -136,7 +162,7 @@ automation:
 
 ## 📝 Behavior notes
 
-Full details on file locations and cleanup: **[Where Auto Time Lapse saves your files](docs/save-locations.md)**.
+Full details on file locations and cleanup: **[Where Auto Time Lapse saves your files](docs/save-locations.md)**. Quality and scaling settings: **[Video quality and image scaling](docs/video-quality.md)**.
 
 - Working frames live under `<config>/auto_time_lapse/<trigger id>/<session>/` — temporary storage only, never cluttering the Media Browser. With *keep frames* on, frames move into a folder next to the finished video, named after it.
 - A failed snapshot (camera offline) is skipped and counted in `failed_frames`; the session keeps going.
