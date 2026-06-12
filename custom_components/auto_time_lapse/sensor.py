@@ -82,7 +82,7 @@ class TimelapseLastVideoSensor(AutoTimeLapseEntity, SensorEntity):
 
 
 class TimelapseCaptureIntervalSensor(AutoTimeLapseEntity, SensorEntity):
-    """Seconds between snapshots currently in effect; unknown when idle or value-change paced."""
+    """Seconds between snapshots in effect; unknown while idle or value-change paced."""
 
     _attr_device_class = SensorDeviceClass.DURATION
     _attr_native_unit_of_measurement = UnitOfTime.SECONDS

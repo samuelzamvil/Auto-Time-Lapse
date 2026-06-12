@@ -1081,7 +1081,9 @@ class TimelapseManager:
         if self.duration_type is DurationType.END_TIME:
             return self._read_end_time_remaining()
         value = self._read_float(self.duration_entity)
-        return None if value is None else value * _DURATION_MULTIPLIER[self.duration_type]
+        if value is None:
+            return None
+        return value * _DURATION_MULTIPLIER[self.duration_type]
 
     def _read_end_time_remaining(self) -> float | None:
         """Return seconds until the end-time entity's timestamp."""
