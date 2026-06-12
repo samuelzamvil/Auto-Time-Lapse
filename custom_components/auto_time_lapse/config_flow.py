@@ -11,6 +11,7 @@ from homeassistant.config_entries import (
     ConfigFlow,
     ConfigFlowResult,
     ConfigSubentryFlow,
+    OptionsFlow,
     SubentryFlowResult,
 )
 from homeassistant.const import CONF_NAME, STATE_ON, STATE_UNAVAILABLE, STATE_UNKNOWN
@@ -48,10 +49,12 @@ from .const import (
     CONF_FILENAME_PATTERN,
     CONF_INTERVAL,
     CONF_KEEP_FRAMES,
+    CONF_MAX_WIDTH,
     CONF_OUTPUT_DIR,
     CONF_OUTPUT_FPS,
     CONF_RULE_ADD_ANOTHER,
     CONF_RULE_CONDITIONS,
+    CONF_SCALE_MODE,
     CONF_SCHEDULE_END,
     CONF_SCHEDULE_START,
     CONF_TARGET_LENGTH,
@@ -59,6 +62,9 @@ from .const import (
     CONF_VALUE_DELTA,
     CONF_VALUE_DIRECTION,
     CONF_VALUE_ENTITY,
+    CONF_VIDEO_CRF,
+    CONF_VIDEO_PRESET,
+    CONF_VIDEO_QUALITY,
     CONF_WATCH_ENTITY,
     CONF_WATCH_STATES,
     DEFAULT_CONDITIONAL_REEVALUATE,
@@ -70,16 +76,106 @@ from .const import (
     DEFAULT_OUTPUT_FPS,
     DEFAULT_TARGET_LENGTH,
     DEFAULT_VALUE_DELTA,
+    DEFAULT_VIDEO_CRF,
+    DEFAULT_VIDEO_PRESET,
     DOMAIN,
+    FFMPEG_PRESETS,
+    OPTION_SERVICE_DEFAULT,
     RULE_CAPTURE_MODES,
     SUBENTRY_TYPE_TRIGGER,
     BufferRetrigger,
     CaptureMode,
     DurationType,
     EndBufferMode,
+    ScaleMode,
     TriggerMode,
     ValueDirection,
+    VideoQuality,
 )
+
+
+def _quality_fields(*, with_inherit: bool) -> dict[Any, Any]:
+    """Video-quality and image-scaling fields shared by both flows.
+
+    With with_inherit, the selects gain a leading "use service default"
+    option (the trigger-level forms); without it they default to the
+    built-in values (the camera entry's options flow).
+    """
+    quality_options = [q.value for q in VideoQuality]
+    scale_options = [m.value for m in ScaleMode]
+    if with_inherit:
+        quality_options.insert(0, OPTION_SERVICE_DEFAULT)
+        scale_options.insert(0, OPTION_SERVICE_DEFAULT)
+        quality_default = OPTION_SERVICE_DEFAULT
+        scale_default = OPTION_SERVICE_DEFAULT
+        suffix = "_override"
+    else:
+        quality_default = VideoQuality.MEDIUM.value
+        scale_default = ScaleMode.OFF.value
+        suffix = ""
+    return {
+        vol.Required(CONF_VIDEO_QUALITY, default=quality_default): SelectSelector(
+            SelectSelectorConfig(
+                options=quality_options,
+                mode=SelectSelectorMode.DROPDOWN,
+                translation_key=f"video_quality{suffix}",
+            )
+        ),
+        vol.Required(CONF_SCALE_MODE, default=scale_default): SelectSelector(
+            SelectSelectorConfig(
+                options=scale_options,
+                mode=SelectSelectorMode.DROPDOWN,
+                translation_key=f"scale_mode{suffix}",
+            )
+        ),
+        vol.Optional(CONF_MAX_WIDTH): vol.All(
+            NumberSelector(
+                NumberSelectorConfig(
+                    min=120,
+                    max=7680,
+                    step=1,
+                    unit_of_measurement="px",
+                    mode=NumberSelectorMode.BOX,
+                )
+            ),
+            vol.Coerce(int),
+        ),
+    }
+
+
+def _custom_video_schema() -> vol.Schema:
+    return vol.Schema(
+        {
+            vol.Required(CONF_VIDEO_CRF, default=DEFAULT_VIDEO_CRF): vol.All(
+                NumberSelector(
+                    NumberSelectorConfig(
+                        min=0, max=51, step=1, mode=NumberSelectorMode.BOX
+                    )
+                ),
+                vol.Coerce(int),
+            ),
+            vol.Required(
+                CONF_VIDEO_PRESET, default=DEFAULT_VIDEO_PRESET
+            ): SelectSelector(
+                SelectSelectorConfig(
+                    options=list(FFMPEG_PRESETS),
+                    mode=SelectSelectorMode.DROPDOWN,
+                    translation_key="video_preset",
+                )
+            ),
+        }
+    )
+
+
+def _validate_scaling(user_input: dict[str, Any]) -> dict[str, str]:
+    """An enabled scale mode needs a maximum width to scale to."""
+    errors: dict[str, str] = {}
+    if user_input.get(CONF_SCALE_MODE) in (
+        ScaleMode.CAPTURE,
+        ScaleMode.RENDER,
+    ) and not user_input.get(CONF_MAX_WIDTH):
+        errors[CONF_MAX_WIDTH] = "max_width_required"
+    return errors
 
 
 def _trigger_schema() -> vol.Schema:
@@ -119,6 +215,7 @@ def _trigger_schema() -> vol.Schema:
             vol.Required(
                 CONF_KEEP_FRAMES, default=DEFAULT_KEEP_FRAMES
             ): BooleanSelector(),
+            **_quality_fields(with_inherit=True),
         }
     )
 
@@ -258,6 +355,68 @@ class AutoTimeLapseConfigFlow(ConfigFlow, domain=DOMAIN):
         """Return subentry flow handlers."""
         return {SUBENTRY_TYPE_TRIGGER: TriggerSubentryFlow}
 
+    @staticmethod
+    @callback
+    def async_get_options_flow(
+        config_entry: ConfigEntry,
+    ) -> AutoTimeLapseOptionsFlow:
+        """Return the options flow for the camera entry."""
+        return AutoTimeLapseOptionsFlow()
+
+
+class AutoTimeLapseOptionsFlow(OptionsFlow):
+    """Camera-wide video and image quality defaults for all triggers."""
+
+    def __init__(self) -> None:
+        self._data: dict[str, Any] = {}
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Pick the quality level and image scaling."""
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            errors = _validate_scaling(user_input)
+            if not errors:
+                self._data = dict(user_input)
+                if user_input[CONF_VIDEO_QUALITY] == VideoQuality.CUSTOM:
+                    return await self.async_step_custom_video()
+                return self._finish()
+        suggested = (
+            user_input if user_input is not None else dict(self.config_entry.options)
+        )
+        return self.async_show_form(
+            step_id="init",
+            data_schema=self.add_suggested_values_to_schema(
+                vol.Schema(_quality_fields(with_inherit=False)), suggested or None
+            ),
+            errors=errors,
+        )
+
+    async def async_step_custom_video(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Set the raw encoder parameters for the custom quality level."""
+        if user_input is not None:
+            self._data.update(user_input)
+            return self._finish()
+        return self.async_show_form(
+            step_id="custom_video",
+            data_schema=self.add_suggested_values_to_schema(
+                _custom_video_schema(), dict(self.config_entry.options) or None
+            ),
+        )
+
+    @callback
+    def _finish(self) -> ConfigFlowResult:
+        data = dict(self._data)
+        if data.get(CONF_VIDEO_QUALITY) != VideoQuality.CUSTOM:
+            data.pop(CONF_VIDEO_CRF, None)
+            data.pop(CONF_VIDEO_PRESET, None)
+        if data.get(CONF_SCALE_MODE) == ScaleMode.OFF:
+            data.pop(CONF_MAX_WIDTH, None)
+        return self.async_create_entry(title="", data=data)
+
 
 class TriggerSubentryFlow(ConfigSubentryFlow):
     """Add or reconfigure a trigger profile on a camera entry."""
@@ -294,19 +453,12 @@ class TriggerSubentryFlow(ConfigSubentryFlow):
         errors: dict[str, str] = {}
         if user_input is not None:
             errors = _validate_output_dir(self.hass, user_input)
+            errors |= _validate_scaling(user_input)
             if not errors:
                 self._data.update(user_input)
-                if self._data[CONF_CAPTURE_MODE] == CaptureMode.VALUE_CHANGE:
-                    return await self.async_step_value_change()
-                if self._data[CONF_CAPTURE_MODE] == CaptureMode.TIME_FIT:
-                    return await self.async_step_fit_length()
-                if self._data[CONF_CAPTURE_MODE] == CaptureMode.CONDITIONAL:
-                    self._rules = []
-                    self._existing_rules = list(
-                        self._data.get(CONF_CONDITIONAL_RULES) or []
-                    )
-                    return await self.async_step_conditional_rule()
-                return await self.async_step_interval()
+                if self._data[CONF_VIDEO_QUALITY] == VideoQuality.CUSTOM:
+                    return await self.async_step_custom_video()
+                return await self._async_after_main()
         suggested = user_input if user_input is not None else self._data
         return self.async_show_form(
             step_id=step_id,
@@ -315,6 +467,34 @@ class TriggerSubentryFlow(ConfigSubentryFlow):
             ),
             errors=errors,
         )
+
+    async def async_step_custom_video(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Set the raw encoder parameters for the custom quality override."""
+        if user_input is not None:
+            self._data.update(user_input)
+            return await self._async_after_main()
+        return self.async_show_form(
+            step_id="custom_video",
+            data_schema=self.add_suggested_values_to_schema(
+                _custom_video_schema(), self._data or None
+            ),
+        )
+
+    async def _async_after_main(self) -> SubentryFlowResult:
+        """Continue with the cadence step for the chosen capture mode."""
+        if self._data[CONF_CAPTURE_MODE] == CaptureMode.VALUE_CHANGE:
+            return await self.async_step_value_change()
+        if self._data[CONF_CAPTURE_MODE] == CaptureMode.TIME_FIT:
+            return await self.async_step_fit_length()
+        if self._data[CONF_CAPTURE_MODE] == CaptureMode.CONDITIONAL:
+            self._rules = []
+            self._existing_rules = list(
+                self._data.get(CONF_CONDITIONAL_RULES) or []
+            )
+            return await self.async_step_conditional_rule()
+        return await self.async_step_interval()
 
     async def _async_next_trigger_step(self) -> SubentryFlowResult:
         mode = self._data[CONF_TRIGGER_MODE]
@@ -712,6 +892,19 @@ class TriggerSubentryFlow(ConfigSubentryFlow):
         if cadence != CaptureMode.CONDITIONAL:
             data.pop(CONF_CONDITIONAL_RULES, None)
             data.pop(CONF_CONDITIONAL_REEVALUATE, None)
+        if data.get(CONF_VIDEO_QUALITY) in (None, OPTION_SERVICE_DEFAULT):
+            data.pop(CONF_VIDEO_QUALITY, None)
+        if data.get(CONF_VIDEO_QUALITY) != VideoQuality.CUSTOM:
+            data.pop(CONF_VIDEO_CRF, None)
+            data.pop(CONF_VIDEO_PRESET, None)
+        scale_mode = data.get(CONF_SCALE_MODE)
+        if scale_mode in (None, OPTION_SERVICE_DEFAULT):
+            data.pop(CONF_SCALE_MODE, None)
+            data.pop(CONF_MAX_WIDTH, None)
+        elif scale_mode == ScaleMode.OFF:
+            # An explicit off override of a service-level capture/render
+            # setting must survive, unlike the inherit sentinel.
+            data.pop(CONF_MAX_WIDTH, None)
         if self._is_new:
             return self.async_create_entry(title=title, data=data)
         return self.async_update_and_abort(

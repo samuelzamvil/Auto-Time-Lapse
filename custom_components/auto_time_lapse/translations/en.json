@@ -15,6 +15,38 @@
       "already_configured": "This camera is already set up. Add another trigger to the existing entry instead."
     }
   },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Video and image quality",
+        "description": "Defaults for every trigger on this camera. Individual triggers can override any of these.",
+        "data": {
+          "video_quality": "Video quality",
+          "scale_mode": "Image scaling",
+          "max_width": "Maximum width"
+        },
+        "data_description": {
+          "video_quality": "Encoding quality of the finished video. Higher quality means larger files and a slower render. Custom opens a step to set the raw x264 CRF and preset.",
+          "scale_mode": "Off: frames and video keep the camera's native resolution. During capture: Home Assistant scales every snapshot the moment it is taken — this decodes and re-encodes each JPEG, costing CPU on every single frame for the whole session, but stores smaller frames on disk. During render: frames are stored at full size and ffmpeg downscales once while rendering the video (recommended unless frame disk usage matters).",
+          "max_width": "Frames or video wider than this are scaled down, keeping the aspect ratio. Required when image scaling is enabled."
+        }
+      },
+      "custom_video": {
+        "title": "Custom video encoding",
+        "data": {
+          "video_crf": "CRF (0–51)",
+          "video_preset": "x264 preset"
+        },
+        "data_description": {
+          "video_crf": "x264 constant rate factor: lower is higher quality and a bigger file. 0 is lossless, 23 is the default, 51 is worst.",
+          "video_preset": "Encoding speed versus compression efficiency. Slower presets produce smaller files at the same quality but render longer."
+        }
+      }
+    },
+    "error": {
+      "max_width_required": "Enter a maximum width to enable image scaling."
+    }
+  },
   "config_subentries": {
     "trigger": {
       "entry_type": "Trigger",
@@ -32,7 +64,10 @@
             "output_fps": "Video frame rate (FPS)",
             "output_dir": "Output directory",
             "filename_pattern": "Filename pattern",
-            "keep_frames": "Keep frames after rendering"
+            "keep_frames": "Keep frames after rendering",
+            "video_quality": "Video quality",
+            "scale_mode": "Image scaling",
+            "max_width": "Maximum width"
           },
           "data_description": {
             "name": "Used for the device name and as the name placeholder in filenames.",
@@ -40,7 +75,10 @@
             "capture_mode": "Time interval: a snapshot every N seconds. Fit target video length: the interval is computed from a duration entity so the video always comes out about a chosen length. Entity value change: a snapshot each time a numeric entity moves by a chosen step, for example one frame per 3D-printer layer. Conditional: rules with Home Assistant conditions decide which cadence applies, with a default for when no rule matches.",
             "output_dir": "Folder for finished videos, created automatically if it does not exist (for example /media/timelapses). Leave empty for the default media folder. Anything under /media shows up in the Media Browser, including NAS shares added via Settings > System > Storage. Paths outside a media folder must be listed in allowlist_external_dirs.",
             "filename_pattern": "Pattern for the video filename. Wrap the placeholders name, timestamp or entry_id in curly braces to insert them, as in the default value.",
-            "keep_frames": "Keep the individual snapshot frames on disk after the video is rendered."
+            "keep_frames": "Keep the individual snapshot frames on disk after the video is rendered.",
+            "video_quality": "Use service default keeps the camera entry's setting. Higher quality means larger files and a slower render. Custom opens a step to set the raw x264 CRF and preset.",
+            "scale_mode": "Use service default keeps the camera entry's setting. Off: frames and video keep the camera's native resolution. During capture: Home Assistant scales every snapshot the moment it is taken — this decodes and re-encodes each JPEG, costing CPU on every single frame for the whole session, but stores smaller frames on disk. During render: frames are stored at full size and ffmpeg downscales once while rendering the video (recommended unless frame disk usage matters).",
+            "max_width": "Frames or video wider than this are scaled down, keeping the aspect ratio. Only applies when this trigger also sets its own image scaling mode."
           }
         },
         "reconfigure": {
@@ -52,7 +90,10 @@
             "output_fps": "Video frame rate (FPS)",
             "output_dir": "Output directory",
             "filename_pattern": "Filename pattern",
-            "keep_frames": "Keep frames after rendering"
+            "keep_frames": "Keep frames after rendering",
+            "video_quality": "Video quality",
+            "scale_mode": "Image scaling",
+            "max_width": "Maximum width"
           },
           "data_description": {
             "name": "Used for the device name and as the name placeholder in filenames.",
@@ -60,7 +101,10 @@
             "capture_mode": "Time interval: a snapshot every N seconds. Fit target video length: the interval is computed from a duration entity so the video always comes out about a chosen length. Entity value change: a snapshot each time a numeric entity moves by a chosen step, for example one frame per 3D-printer layer. Conditional: rules with Home Assistant conditions decide which cadence applies, with a default for when no rule matches.",
             "output_dir": "Folder for finished videos, created automatically if it does not exist (for example /media/timelapses). Leave empty for the default media folder. Anything under /media shows up in the Media Browser, including NAS shares added via Settings > System > Storage. Paths outside a media folder must be listed in allowlist_external_dirs.",
             "filename_pattern": "Pattern for the video filename. Wrap the placeholders name, timestamp or entry_id in curly braces to insert them, as in the default value.",
-            "keep_frames": "Keep the individual snapshot frames on disk after the video is rendered."
+            "keep_frames": "Keep the individual snapshot frames on disk after the video is rendered.",
+            "video_quality": "Use service default keeps the camera entry's setting. Higher quality means larger files and a slower render. Custom opens a step to set the raw x264 CRF and preset.",
+            "scale_mode": "Use service default keeps the camera entry's setting. Off: frames and video keep the camera's native resolution. During capture: Home Assistant scales every snapshot the moment it is taken — this decodes and re-encodes each JPEG, costing CPU on every single frame for the whole session, but stores smaller frames on disk. During render: frames are stored at full size and ffmpeg downscales once while rendering the video (recommended unless frame disk usage matters).",
+            "max_width": "Frames or video wider than this are scaled down, keeping the aspect ratio. Only applies when this trigger also sets its own image scaling mode."
           }
         },
         "schedule": {
@@ -185,6 +229,17 @@
             "value_direction": "Which way the value must move to capture.",
             "conditional_reevaluate": "On: the rules are re-checked while capturing and the cadence switches as soon as another rule matches. Off: the rule matching at session start is locked in for the whole session."
           }
+        },
+        "custom_video": {
+          "title": "Custom video encoding",
+          "data": {
+            "video_crf": "CRF (0–51)",
+            "video_preset": "x264 preset"
+          },
+          "data_description": {
+            "video_crf": "x264 constant rate factor: lower is higher quality and a bigger file. 0 is lossless, 23 is the default, 51 is worst.",
+            "video_preset": "Encoding speed versus compression efficiency. Slower presets produce smaller files at the same quality but render longer."
+          }
         }
       },
       "error": {
@@ -196,7 +251,8 @@
         "buffer_amount_required": "Enter how many frames or seconds to buffer.",
         "buffer_interval_required": "A buffer capture interval is required when the session can be paced by entity value changes.",
         "conditions_required": "Add at least one condition, or finish with the default cadence instead.",
-        "value_entity_required": "Pick the entity that paces the frames for the value change cadence."
+        "value_entity_required": "Pick the entity that paces the frames for the value change cadence.",
+        "max_width_required": "Enter a maximum width to enable image scaling."
       },
       "abort": {
         "reconfigure_successful": "Trigger updated."
@@ -251,6 +307,53 @@
       "options": {
         "resume": "Resume the same session",
         "finish": "Finish, render, start fresh"
+      }
+    },
+    "video_quality": {
+      "options": {
+        "low": "Low (smaller files)",
+        "medium": "Medium (default)",
+        "high": "High",
+        "maximum": "Maximum (largest files)",
+        "custom": "Custom (raw CRF and preset)"
+      }
+    },
+    "video_quality_override": {
+      "options": {
+        "service_default": "Use service default",
+        "low": "Low (smaller files)",
+        "medium": "Medium",
+        "high": "High",
+        "maximum": "Maximum (largest files)",
+        "custom": "Custom (raw CRF and preset)"
+      }
+    },
+    "scale_mode": {
+      "options": {
+        "off": "Off (native resolution)",
+        "capture": "During capture (CPU cost on every snapshot)",
+        "render": "During render (once, recommended)"
+      }
+    },
+    "scale_mode_override": {
+      "options": {
+        "service_default": "Use service default",
+        "off": "Off (native resolution)",
+        "capture": "During capture (CPU cost on every snapshot)",
+        "render": "During render (once, recommended)"
+      }
+    },
+    "video_preset": {
+      "options": {
+        "ultrafast": "Ultrafast",
+        "superfast": "Superfast",
+        "veryfast": "Very fast",
+        "faster": "Faster",
+        "fast": "Fast",
+        "medium": "Medium",
+        "slow": "Slow",
+        "slower": "Slower",
+        "veryslow": "Very slow"
       }
     }
   },

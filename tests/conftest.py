@@ -91,12 +91,17 @@ def base_trigger_data() -> dict:
     }
 
 
-def make_entry(trigger_data: dict, title: str = "Test Lapse") -> MockConfigEntry:
+def make_entry(
+    trigger_data: dict,
+    title: str = "Test Lapse",
+    options: dict | None = None,
+) -> MockConfigEntry:
     """Build a camera entry with a single trigger subentry."""
     return MockConfigEntry(
         domain=DOMAIN,
         title="Demo Camera",
         data={CONF_CAMERA_ENTITY: "camera.demo"},
+        options=options or {},
         entry_id="test_entry_id",
         version=2,
         subentries_data=[

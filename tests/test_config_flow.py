@@ -23,10 +23,12 @@ from custom_components.auto_time_lapse.const import (
     CONF_FILENAME_PATTERN,
     CONF_INTERVAL,
     CONF_KEEP_FRAMES,
+    CONF_MAX_WIDTH,
     CONF_OUTPUT_DIR,
     CONF_OUTPUT_FPS,
     CONF_RULE_ADD_ANOTHER,
     CONF_RULE_CONDITIONS,
+    CONF_SCALE_MODE,
     CONF_SCHEDULE_END,
     CONF_SCHEDULE_START,
     CONF_TARGET_LENGTH,
@@ -34,16 +36,22 @@ from custom_components.auto_time_lapse.const import (
     CONF_VALUE_DELTA,
     CONF_VALUE_DIRECTION,
     CONF_VALUE_ENTITY,
+    CONF_VIDEO_CRF,
+    CONF_VIDEO_PRESET,
+    CONF_VIDEO_QUALITY,
     CONF_WATCH_ENTITY,
     CONF_WATCH_STATES,
     DOMAIN,
+    OPTION_SERVICE_DEFAULT,
     SUBENTRY_TYPE_TRIGGER,
     BufferRetrigger,
     CaptureMode,
     DurationType,
     EndBufferMode,
+    ScaleMode,
     TriggerMode,
     ValueDirection,
+    VideoQuality,
 )
 
 from .conftest import make_entry
@@ -701,6 +709,172 @@ async def test_reconfigure_conditional_to_time_strips_rules(hass):
     assert subentry.data[CONF_INTERVAL] == 30
     assert CONF_CONDITIONAL_RULES not in subentry.data
     assert CONF_CONDITIONAL_REEVALUATE not in subentry.data
+
+
+QUALITY_KEYS = (
+    CONF_VIDEO_QUALITY,
+    CONF_VIDEO_CRF,
+    CONF_VIDEO_PRESET,
+    CONF_SCALE_MODE,
+    CONF_MAX_WIDTH,
+)
+
+
+async def test_options_flow_preset_quality(hass, mock_entry):
+    """A preset quality level saves without raw encoder keys."""
+    await _setup_loaded_entry(hass, mock_entry)
+    result = await hass.config_entries.options.async_init(mock_entry.entry_id)
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "init"
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            CONF_VIDEO_QUALITY: VideoQuality.HIGH.value,
+            CONF_SCALE_MODE: ScaleMode.RENDER.value,
+            CONF_MAX_WIDTH: 1280,
+        },
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert dict(mock_entry.options) == {
+        CONF_VIDEO_QUALITY: VideoQuality.HIGH.value,
+        CONF_SCALE_MODE: ScaleMode.RENDER.value,
+        CONF_MAX_WIDTH: 1280,
+    }
+
+
+async def test_options_flow_custom_quality(hass, mock_entry):
+    """The custom quality level adds a step for raw CRF and preset."""
+    await _setup_loaded_entry(hass, mock_entry)
+    result = await hass.config_entries.options.async_init(mock_entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            CONF_VIDEO_QUALITY: VideoQuality.CUSTOM.value,
+            CONF_SCALE_MODE: ScaleMode.OFF.value,
+        },
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "custom_video"
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {CONF_VIDEO_CRF: 18, CONF_VIDEO_PRESET: "slow"},
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert dict(mock_entry.options) == {
+        CONF_VIDEO_QUALITY: VideoQuality.CUSTOM.value,
+        CONF_SCALE_MODE: ScaleMode.OFF.value,
+        CONF_VIDEO_CRF: 18,
+        CONF_VIDEO_PRESET: "slow",
+    }
+
+
+async def test_options_flow_requires_max_width(hass, mock_entry):
+    """An enabled scale mode without a width re-shows the form."""
+    await _setup_loaded_entry(hass, mock_entry)
+    result = await hass.config_entries.options.async_init(mock_entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            CONF_VIDEO_QUALITY: VideoQuality.MEDIUM.value,
+            CONF_SCALE_MODE: ScaleMode.CAPTURE.value,
+        },
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {CONF_MAX_WIDTH: "max_width_required"}
+
+
+async def test_options_flow_prunes_width_when_off(hass, mock_entry):
+    """A width entered with scaling off is not stored."""
+    await _setup_loaded_entry(hass, mock_entry)
+    result = await hass.config_entries.options.async_init(mock_entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            CONF_VIDEO_QUALITY: VideoQuality.MEDIUM.value,
+            CONF_SCALE_MODE: ScaleMode.OFF.value,
+            CONF_MAX_WIDTH: 640,
+        },
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert CONF_MAX_WIDTH not in mock_entry.options
+
+
+async def test_trigger_custom_quality_step(hass, mock_entry):
+    """A custom quality override inserts the encoder step before the cadence."""
+    await _setup_loaded_entry(hass, mock_entry)
+    result = await _start_trigger_flow(hass, mock_entry)
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        dict(TRIGGER_INPUT) | {CONF_VIDEO_QUALITY: VideoQuality.CUSTOM.value},
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "custom_video"
+
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        {CONF_VIDEO_CRF: 28, CONF_VIDEO_PRESET: "veryfast"},
+    )
+    result = await _pass_interval_step(hass, result)
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    subentry = next(
+        s for s in mock_entry.subentries.values() if s.title == "Garden"
+    )
+    assert subentry.data[CONF_VIDEO_QUALITY] == VideoQuality.CUSTOM.value
+    assert subentry.data[CONF_VIDEO_CRF] == 28
+    assert subentry.data[CONF_VIDEO_PRESET] == "veryfast"
+    assert CONF_SCALE_MODE not in subentry.data
+
+
+async def test_trigger_quality_defaults_store_nothing(hass, mock_entry):
+    """Leaving every override at 'use service default' stores no quality keys."""
+    await _setup_loaded_entry(hass, mock_entry)
+    result = await _start_trigger_flow(hass, mock_entry)
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], dict(TRIGGER_INPUT)
+    )
+    result = await _pass_interval_step(hass, result)
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    subentry = next(
+        s for s in mock_entry.subentries.values() if s.title == "Garden"
+    )
+    assert not any(key in subentry.data for key in QUALITY_KEYS)
+
+
+async def test_trigger_explicit_scale_off_is_kept(hass, mock_entry):
+    """An explicit off override survives, unlike the inherit sentinel."""
+    await _setup_loaded_entry(hass, mock_entry)
+    result = await _start_trigger_flow(hass, mock_entry)
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        dict(TRIGGER_INPUT)
+        | {
+            CONF_VIDEO_QUALITY: OPTION_SERVICE_DEFAULT,
+            CONF_SCALE_MODE: ScaleMode.OFF.value,
+            CONF_MAX_WIDTH: 640,
+        },
+    )
+    result = await _pass_interval_step(hass, result)
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    subentry = next(
+        s for s in mock_entry.subentries.values() if s.title == "Garden"
+    )
+    assert subentry.data[CONF_SCALE_MODE] == ScaleMode.OFF.value
+    assert CONF_MAX_WIDTH not in subentry.data
+    assert CONF_VIDEO_QUALITY not in subentry.data
+
+
+async def test_trigger_main_requires_max_width(hass, mock_entry):
+    """A trigger-level scale mode without a width errors on the main step."""
+    await _setup_loaded_entry(hass, mock_entry)
+    result = await _start_trigger_flow(hass, mock_entry)
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        dict(TRIGGER_INPUT) | {CONF_SCALE_MODE: ScaleMode.RENDER.value},
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {CONF_MAX_WIDTH: "max_width_required"}
 
 
 async def test_reconfigure_to_manual_strips_buffer_keys(hass):

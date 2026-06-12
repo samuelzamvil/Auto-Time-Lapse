@@ -10,7 +10,12 @@ from homeassistant.components.ffmpeg import get_ffmpeg_manager
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 
-from .const import FRAME_PATTERN, RENDER_TIMEOUT
+from .const import (
+    DEFAULT_VIDEO_CRF,
+    DEFAULT_VIDEO_PRESET,
+    FRAME_PATTERN,
+    RENDER_TIMEOUT,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -20,10 +25,25 @@ class RenderError(HomeAssistantError):
 
 
 async def async_render_timelapse(
-    hass: HomeAssistant, session_dir: Path, output_path: Path, fps: int
+    hass: HomeAssistant,
+    session_dir: Path,
+    output_path: Path,
+    fps: int,
+    *,
+    crf: int = DEFAULT_VIDEO_CRF,
+    preset: str = DEFAULT_VIDEO_PRESET,
+    max_width: int | None = None,
 ) -> None:
     """Stitch the numbered JPEG frames in session_dir into an MP4 at output_path."""
     binary = get_ffmpeg_manager(hass).binary
+    if max_width:
+        # min() caps the width without ever upscaling; trunc(./2)*2 forces an
+        # even width and -2 an even aspect-preserving height (libx264 needs
+        # even dimensions). The \, escapes the comma inside min() for the
+        # filter parser.
+        vf = f"scale=trunc(min(iw\\,{max_width})/2)*2:-2,format=yuv420p"
+    else:
+        vf = "scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p"
     args = [
         "-y",
         "-nostdin",
@@ -34,13 +54,13 @@ async def async_render_timelapse(
         # libx264 requires even dimensions; yuv420p + faststart make the file
         # playable/streamable in browsers (and HA's Media Browser).
         "-vf",
-        "scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p",
+        vf,
         "-c:v",
         "libx264",
         "-preset",
-        "medium",
+        str(preset),
         "-crf",
-        "23",
+        str(crf),
         "-movflags",
         "+faststart",
         str(output_path),
