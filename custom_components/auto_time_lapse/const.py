@@ -71,6 +71,7 @@ SERVICE_CANCEL = "cancel"
 ATTR_DEVICE_ID = "device_id"
 
 EVENT_TIMELAPSE_FINISHED = "auto_time_lapse_finished"
+EVENT_TIMELAPSE_FAILED = "auto_time_lapse_failed"
 
 OUTPUT_SUBDIR = "auto_time_lapse"
 FRAME_FILENAME = "frame_{index:06d}.jpg"

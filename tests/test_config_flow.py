@@ -240,6 +240,28 @@ async def test_trigger_subentry_watch(hass, mock_entry):
     assert subentry.data[CONF_WATCH_STATES] == ["printing", "paused"]
 
 
+async def test_watch_states_required(hass, mock_entry):
+    """The watch step rejects an empty active-states list."""
+    await _setup_loaded_entry(hass, mock_entry)
+    result = await _start_trigger_flow(hass, mock_entry)
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        dict(TRIGGER_INPUT) | {CONF_TRIGGER_MODE: TriggerMode.WATCH.value},
+    )
+    result = await _pass_interval_step(hass, result)
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {CONF_WATCH_ENTITY: "sensor.printer_status"}
+    )
+    assert result["step_id"] == "watch_states"
+
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {CONF_WATCH_STATES: []}
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "watch_states"
+    assert result["errors"] == {CONF_WATCH_STATES: "states_required"}
+
+
 async def test_trigger_subentry_value_change(hass, mock_entry):
     """The value-change cadence asks for entity, step, and direction."""
     await _setup_loaded_entry(hass, mock_entry)

@@ -6,6 +6,7 @@ from datetime import timedelta
 from pathlib import Path
 from unittest.mock import patch
 
+from homeassistant.components import persistent_notification
 from homeassistant.const import STATE_OFF, STATE_ON, STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.event import async_track_time_interval
@@ -41,6 +42,7 @@ from custom_components.auto_time_lapse.const import (
     CONF_WATCH_ENTITY,
     CONF_WATCH_STATES,
     DOMAIN,
+    EVENT_TIMELAPSE_FAILED,
     EVENT_TIMELAPSE_FINISHED,
     SERVICE_CANCEL,
     SERVICE_START,
@@ -112,6 +114,95 @@ async def test_capture_stop_render_cycle(
     # Frames are cleaned up after a successful render (keep_frames is off).
     assert not list(_frames_dir(tmp_path).rglob("*.jpg"))
     assert hass.states.get(interval_sensor).state == STATE_UNKNOWN
+
+
+async def test_render_failure_fires_failed_event_and_notifies(
+    hass, mock_entry, mock_camera_image, mock_render, tmp_path
+):
+    """A failed render fires the failed event, notifies, and records the error."""
+    await setup_integration(hass, mock_entry)
+    manager = get_manager(mock_entry)
+    device_id = get_device_id(hass)
+
+    events = []
+    hass.bus.async_listen(EVENT_TIMELAPSE_FAILED, events.append)
+
+    mock_render.side_effect = RenderError("ffmpeg exploded")
+
+    await hass.services.async_call(
+        DOMAIN, SERVICE_START, {ATTR_DEVICE_ID: device_id}, blocking=True
+    )
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert manager.frame_count == 1
+
+    await hass.services.async_call(
+        DOMAIN, SERVICE_STOP, {ATTR_DEVICE_ID: device_id}, blocking=True
+    )
+    await hass.async_block_till_done(wait_background_tasks=True)
+
+    mock_render.assert_called_once()
+    assert manager.state is SessionState.IDLE
+
+    # The failed event carries the same shape as the finished event plus error.
+    assert len(events) == 1
+    data = events[0].data
+    assert data["entry_id"] == mock_entry.entry_id
+    assert data["subentry_id"] == TEST_SUBENTRY_ID
+    assert data["name"] == manager.title
+    assert data["frame_count"] == 1
+    assert data["error"] == "ffmpeg exploded"
+    assert data["session_dir"] and isinstance(data["session_dir"], str)
+
+    # The error is recorded and surfaced through the diagnostic sensor.
+    assert manager.last_error == "ffmpeg exploded"
+    assert hass.states.get("sensor.test_lapse_last_error").state == "ffmpeg exploded"
+
+    # A persistent notification is created, keyed per trigger so repeats replace.
+    notifications = persistent_notification._async_get_or_create_notifications(hass)
+    notification_id = f"{DOMAIN}_render_failed_{TEST_SUBENTRY_ID}"
+    assert notification_id in notifications
+
+    # Frames are retained for a re-render after a failure.
+    assert list(_frames_dir(tmp_path).rglob("*.jpg"))
+
+
+async def test_successful_render_clears_error_and_notification(
+    hass, mock_entry, mock_camera_image, mock_render, tmp_path
+):
+    """A later successful render clears the error and dismisses the notification."""
+    await setup_integration(hass, mock_entry)
+    manager = get_manager(mock_entry)
+    device_id = get_device_id(hass)
+    notification_id = f"{DOMAIN}_render_failed_{TEST_SUBENTRY_ID}"
+
+    # First, drive a failure.
+    mock_render.side_effect = RenderError("ffmpeg exploded")
+    await hass.services.async_call(
+        DOMAIN, SERVICE_START, {ATTR_DEVICE_ID: device_id}, blocking=True
+    )
+    await hass.async_block_till_done(wait_background_tasks=True)
+    await hass.services.async_call(
+        DOMAIN, SERVICE_STOP, {ATTR_DEVICE_ID: device_id}, blocking=True
+    )
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert manager.last_error == "ffmpeg exploded"
+    notifications = persistent_notification._async_get_or_create_notifications(hass)
+    assert notification_id in notifications
+
+    # Then a clean render: the error and notification both clear.
+    mock_render.side_effect = None
+    await hass.services.async_call(
+        DOMAIN, SERVICE_START, {ATTR_DEVICE_ID: device_id}, blocking=True
+    )
+    await hass.async_block_till_done(wait_background_tasks=True)
+    await hass.services.async_call(
+        DOMAIN, SERVICE_STOP, {ATTR_DEVICE_ID: device_id}, blocking=True
+    )
+    await hass.async_block_till_done(wait_background_tasks=True)
+
+    assert manager.last_error is None
+    assert hass.states.get("sensor.test_lapse_last_error").state == STATE_UNKNOWN
+    assert notification_id not in notifications
 
 
 async def test_camera_failure_skips_frame(
