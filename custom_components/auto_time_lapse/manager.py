@@ -265,7 +265,9 @@ class TimelapseManager:
 
     @property
     def target_length(self) -> float:
-        return float(self._cadence_options.get(CONF_TARGET_LENGTH, DEFAULT_TARGET_LENGTH))
+        return float(
+            self._cadence_options.get(CONF_TARGET_LENGTH, DEFAULT_TARGET_LENGTH)
+        )
 
     @property
     def fallback_interval(self) -> int:
@@ -282,7 +284,7 @@ class TimelapseManager:
 
     @property
     def _active_capture_mode(self) -> CaptureMode:
-        """The effective cadence: the active rule's mode when conditional, else capture_mode."""
+        """Effective cadence: the active rule's mode when conditional."""
         if self.capture_mode is CaptureMode.CONDITIONAL and self._active_rule:
             try:
                 return CaptureMode(

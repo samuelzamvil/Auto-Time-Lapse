@@ -1218,7 +1218,7 @@ async def test_conditional_rule_locked_at_session_start(
 async def test_conditional_time_fit_rule(
     hass, base_trigger_data, mock_camera_image, mock_render
 ):
-    """A conditional TIME_FIT rule computes and freezes the interval at session start."""
+    """A conditional TIME_FIT rule computes and freezes the interval at start."""
     hass.states.async_set("sensor.print_duration", "3600")  # 3600 s
     rules = [
         {
