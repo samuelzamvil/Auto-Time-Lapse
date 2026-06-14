@@ -38,7 +38,6 @@ from .const import (
     CONF_AUTO_PURGE,
     CONF_CAMERA_ENTITY,
     CONF_CAPTURE_MODE,
-    CONF_CONDITIONAL_REEVALUATE,
     CONF_CONDITIONAL_RULES,
     CONF_DURATION_ENTITY,
     CONF_DURATION_TYPE,
@@ -72,7 +71,6 @@ from .const import (
     CONF_WATCH_ENTITY,
     CONF_WATCH_STATES,
     DEFAULT_AUTO_PURGE,
-    DEFAULT_CONDITIONAL_REEVALUATE,
     DEFAULT_END_BUFFER_AMOUNT,
     DEFAULT_FALLBACK_INTERVAL,
     DEFAULT_FILENAME_PATTERN,
@@ -278,8 +276,7 @@ def _validate_output_dir(
 def _conditional_rule_schema(*, is_default: bool) -> vol.Schema:
     """Schema for one rule of the conditional cadence.
 
-    The default (else) rule has no conditions and carries the trigger-wide
-    re-evaluation toggle instead of the add-another checkbox.
+    The default (else) rule has no conditions and no add-another checkbox.
     """
     fields: dict[Any, Any] = {}
     if not is_default:
@@ -305,6 +302,42 @@ def _conditional_rule_schema(*, is_default: bool) -> vol.Schema:
         ),
         vol.Coerce(int),
     )
+    fields[vol.Optional(CONF_DURATION_ENTITY)] = EntitySelector()
+    fields[vol.Optional(
+        CONF_DURATION_TYPE, default=DurationType.SECONDS.value
+    )] = SelectSelector(
+        SelectSelectorConfig(
+            options=[t.value for t in DurationType],
+            mode=SelectSelectorMode.DROPDOWN,
+            translation_key="duration_type",
+        )
+    )
+    fields[vol.Optional(
+        CONF_TARGET_LENGTH, default=DEFAULT_TARGET_LENGTH
+    )] = vol.All(
+        NumberSelector(
+            NumberSelectorConfig(
+                step="any",
+                unit_of_measurement="s",
+                mode=NumberSelectorMode.BOX,
+            )
+        ),
+        vol.Coerce(float),
+    )
+    fields[vol.Optional(
+        CONF_FALLBACK_INTERVAL, default=DEFAULT_FALLBACK_INTERVAL
+    )] = vol.All(
+        NumberSelector(
+            NumberSelectorConfig(
+                min=1,
+                max=86400,
+                step=1,
+                unit_of_measurement="s",
+                mode=NumberSelectorMode.BOX,
+            )
+        ),
+        vol.Coerce(int),
+    )
     fields[vol.Optional(CONF_VALUE_ENTITY)] = EntitySelector()
     fields[vol.Optional(CONF_VALUE_DELTA, default=DEFAULT_VALUE_DELTA)] = vol.All(
         NumberSelector(NumberSelectorConfig(step="any", mode=NumberSelectorMode.BOX)),
@@ -319,13 +352,7 @@ def _conditional_rule_schema(*, is_default: bool) -> vol.Schema:
             )
         )
     )
-    if is_default:
-        fields[
-            vol.Required(
-                CONF_CONDITIONAL_REEVALUATE, default=DEFAULT_CONDITIONAL_REEVALUATE
-            )
-        ] = BooleanSelector()
-    else:
+    if not is_default:
         fields[vol.Required(CONF_RULE_ADD_ANOTHER, default=False)] = BooleanSelector()
     return vol.Schema(fields)
 
@@ -338,6 +365,11 @@ def _validate_rule(user_input: dict[str, Any]) -> dict[str, str]:
             errors[CONF_VALUE_ENTITY] = "value_entity_required"
         if float(user_input.get(CONF_VALUE_DELTA, DEFAULT_VALUE_DELTA)) <= 0:
             errors[CONF_VALUE_DELTA] = "delta_positive"
+    elif user_input[CONF_CAPTURE_MODE] == CaptureMode.TIME_FIT:
+        if not user_input.get(CONF_DURATION_ENTITY):
+            errors[CONF_DURATION_ENTITY] = "duration_entity_required"
+        if float(user_input.get(CONF_TARGET_LENGTH, DEFAULT_TARGET_LENGTH)) <= 0:
+            errors[CONF_TARGET_LENGTH] = "length_positive"
     return errors
 
 
@@ -357,6 +389,17 @@ def _build_rule(
         )
         rule[CONF_VALUE_DIRECTION] = user_input.get(
             CONF_VALUE_DIRECTION, ValueDirection.ANY.value
+        )
+    elif mode == CaptureMode.TIME_FIT:
+        rule[CONF_DURATION_ENTITY] = user_input[CONF_DURATION_ENTITY]
+        rule[CONF_DURATION_TYPE] = user_input.get(
+            CONF_DURATION_TYPE, DurationType.SECONDS.value
+        )
+        rule[CONF_TARGET_LENGTH] = float(
+            user_input.get(CONF_TARGET_LENGTH, DEFAULT_TARGET_LENGTH)
+        )
+        rule[CONF_FALLBACK_INTERVAL] = int(
+            user_input.get(CONF_FALLBACK_INTERVAL, DEFAULT_FALLBACK_INTERVAL)
         )
     else:
         rule[CONF_INTERVAL] = int(user_input.get(CONF_INTERVAL, DEFAULT_INTERVAL))
@@ -728,16 +771,10 @@ class TriggerSubentryFlow(ConfigSubentryFlow):
             if not errors:
                 self._rules.append(_build_rule(user_input, conditions=None))
                 self._data[CONF_CONDITIONAL_RULES] = self._rules
-                self._data[CONF_CONDITIONAL_REEVALUATE] = user_input[
-                    CONF_CONDITIONAL_REEVALUATE
-                ]
                 return await self._async_next_trigger_step()
         suggested = user_input
         if suggested is None and self._existing_rules:
             suggested = dict(self._existing_rules[-1])
-            suggested[CONF_CONDITIONAL_REEVALUATE] = self._data.get(
-                CONF_CONDITIONAL_REEVALUATE, DEFAULT_CONDITIONAL_REEVALUATE
-            )
         return self.async_show_form(
             step_id="conditional_default",
             data_schema=self.add_suggested_values_to_schema(
@@ -935,7 +972,6 @@ class TriggerSubentryFlow(ConfigSubentryFlow):
             data.pop(CONF_VALUE_DIRECTION, None)
         if cadence != CaptureMode.CONDITIONAL:
             data.pop(CONF_CONDITIONAL_RULES, None)
-            data.pop(CONF_CONDITIONAL_REEVALUATE, None)
         if data.get(CONF_VIDEO_QUALITY) in (None, OPTION_SERVICE_DEFAULT):
             data.pop(CONF_VIDEO_QUALITY, None)
         if data.get(CONF_VIDEO_QUALITY) != VideoQuality.CUSTOM:

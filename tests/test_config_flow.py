@@ -11,7 +11,6 @@ from homeassistant.data_entry_flow import FlowResultType
 from custom_components.auto_time_lapse.const import (
     CONF_CAMERA_ENTITY,
     CONF_CAPTURE_MODE,
-    CONF_CONDITIONAL_REEVALUATE,
     CONF_CONDITIONAL_RULES,
     CONF_DURATION_ENTITY,
     CONF_DURATION_TYPE,
@@ -544,7 +543,6 @@ async def test_trigger_subentry_conditional(hass, mock_entry):
             CONF_VALUE_ENTITY: "sensor.current_layer",
             CONF_VALUE_DELTA: 1,
             CONF_VALUE_DIRECTION: ValueDirection.INCREASE.value,
-            CONF_CONDITIONAL_REEVALUATE: True,
         },
     )
     assert result["type"] is FlowResultType.CREATE_ENTRY
@@ -552,7 +550,6 @@ async def test_trigger_subentry_conditional(hass, mock_entry):
         s for s in mock_entry.subentries.values() if s.title == "Garden"
     )
     assert subentry.data[CONF_CAPTURE_MODE] == CaptureMode.CONDITIONAL.value
-    assert subentry.data[CONF_CONDITIONAL_REEVALUATE] is True
     rules = subentry.data[CONF_CONDITIONAL_RULES]
     assert len(rules) == 3
     # The selector normalizes condition configs (entity_id becomes a list).
@@ -615,7 +612,6 @@ async def test_conditional_rule_validation(hass, mock_entry):
         {
             CONF_CAPTURE_MODE: CaptureMode.VALUE_CHANGE.value,
             CONF_VALUE_DELTA: 0,
-            CONF_CONDITIONAL_REEVALUATE: True,
         },
     )
     assert result["type"] is FlowResultType.FORM
@@ -623,6 +619,63 @@ async def test_conditional_rule_validation(hass, mock_entry):
         CONF_VALUE_ENTITY: "value_entity_required",
         CONF_VALUE_DELTA: "delta_positive",
     }
+
+
+async def test_conditional_rule_time_fit(hass, mock_entry):
+    """A conditional rule may use the fit-target-length cadence."""
+    await _setup_loaded_entry(hass, mock_entry)
+    result = await _start_trigger_flow(hass, mock_entry)
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        dict(TRIGGER_INPUT) | {CONF_CAPTURE_MODE: CaptureMode.CONDITIONAL.value},
+    )
+    assert result["step_id"] == "conditional_rule"
+
+    # Submit a TIME_FIT rule without a duration entity: should fail validation.
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        {
+            CONF_RULE_CONDITIONS: LAYER_BELOW_20,
+            CONF_CAPTURE_MODE: CaptureMode.TIME_FIT.value,
+            CONF_TARGET_LENGTH: 0,
+            CONF_RULE_ADD_ANOTHER: False,
+        },
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert CONF_DURATION_ENTITY in result["errors"]
+    assert CONF_TARGET_LENGTH in result["errors"]
+
+    # Submit a valid TIME_FIT rule.
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        {
+            CONF_RULE_CONDITIONS: LAYER_BELOW_20,
+            CONF_CAPTURE_MODE: CaptureMode.TIME_FIT.value,
+            CONF_DURATION_ENTITY: "sensor.print_time",
+            CONF_DURATION_TYPE: DurationType.SECONDS.value,
+            CONF_TARGET_LENGTH: 30.0,
+            CONF_FALLBACK_INTERVAL: 60,
+            CONF_RULE_ADD_ANOTHER: False,
+        },
+    )
+    assert result["step_id"] == "conditional_default"
+
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        {
+            CONF_CAPTURE_MODE: CaptureMode.TIME.value,
+            CONF_INTERVAL: 120,
+        },
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+
+    subentry = next(s for s in mock_entry.subentries.values() if s.title == "Garden")
+    rules = subentry.data[CONF_CONDITIONAL_RULES]
+    assert rules[0][CONF_CAPTURE_MODE] == CaptureMode.TIME_FIT.value
+    assert rules[0][CONF_DURATION_ENTITY] == "sensor.print_time"
+    assert rules[0][CONF_TARGET_LENGTH] == 30.0
+    assert rules[0][CONF_FALLBACK_INTERVAL] == 60
+    assert CONF_INTERVAL not in rules[0]
 
 
 async def test_buffer_requires_interval_for_conditional_value_rule(
@@ -655,7 +708,6 @@ async def test_buffer_requires_interval_for_conditional_value_rule(
             CONF_VALUE_ENTITY: "sensor.current_layer",
             CONF_VALUE_DELTA: 1,
             CONF_VALUE_DIRECTION: ValueDirection.ANY.value,
-            CONF_CONDITIONAL_REEVALUATE: True,
         },
     )
     result = await hass.config_entries.subentries.async_configure(
@@ -701,7 +753,6 @@ async def test_reconfigure_conditional_to_time_strips_rules(hass):
                     CONF_INTERVAL: 60,
                 },
             ],
-            CONF_CONDITIONAL_REEVALUATE: True,
             CONF_OUTPUT_FPS: 30,
             CONF_FILENAME_PATTERN: "{name}_{timestamp}.mp4",
             CONF_KEEP_FRAMES: False,
@@ -730,7 +781,6 @@ async def test_reconfigure_conditional_to_time_strips_rules(hass):
     assert subentry.data[CONF_CAPTURE_MODE] == CaptureMode.TIME.value
     assert subentry.data[CONF_INTERVAL] == 30
     assert CONF_CONDITIONAL_RULES not in subentry.data
-    assert CONF_CONDITIONAL_REEVALUATE not in subentry.data
 
 
 QUALITY_KEYS = (

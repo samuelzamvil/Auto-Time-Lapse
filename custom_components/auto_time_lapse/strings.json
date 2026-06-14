@@ -211,6 +211,10 @@
             "conditions": "Conditions",
             "capture_mode": "Cadence while these conditions hold",
             "interval": "Capture interval (time interval cadence)",
+            "duration_entity": "Duration entity (fit target length cadence)",
+            "duration_type": "Duration entity reports (fit target length cadence)",
+            "target_length": "Target video length (fit target length cadence)",
+            "fallback_interval": "Fallback interval (fit target length cadence)",
             "value_entity": "Value entity (value change cadence)",
             "value_delta": "Capture every (value change cadence)",
             "value_direction": "Direction (value change cadence)",
@@ -218,8 +222,12 @@
           },
           "data_description": {
             "conditions": "Home Assistant conditions that must all hold for this rule to apply, for example a numeric state condition on a layer count sensor.",
-            "capture_mode": "Time interval: a snapshot every N seconds. Entity value change: a snapshot each time a numeric entity moves by a chosen step.",
+            "capture_mode": "Time interval: a snapshot every N seconds. Fit target video length: auto-compute the interval from a duration entity. Entity value change: a snapshot each time a numeric entity moves by a chosen step.",
             "interval": "Seconds between snapshots while this rule applies.",
+            "duration_entity": "Entity that reports the expected total duration of the session while this rule applies, for example a 3D printer's estimated print time sensor.",
+            "duration_type": "How to read the duration entity: as a number of seconds, minutes, or hours, or as an end-time timestamp.",
+            "target_length": "Desired length of the finished video. The capture interval is computed once when the session starts.",
+            "fallback_interval": "Seconds between snapshots when the duration entity cannot be read as a positive number at session start.",
             "value_entity": "Numeric entity that paces the frames while this rule applies.",
             "value_delta": "A frame is captured each time the value moves by at least this amount since the last frame. Use 1 for one frame per layer.",
             "value_direction": "Which way the value must move to capture.",
@@ -232,18 +240,24 @@
           "data": {
             "capture_mode": "Default cadence",
             "interval": "Capture interval (time interval cadence)",
+            "duration_entity": "Duration entity (fit target length cadence)",
+            "duration_type": "Duration entity reports (fit target length cadence)",
+            "target_length": "Target video length (fit target length cadence)",
+            "fallback_interval": "Fallback interval (fit target length cadence)",
             "value_entity": "Value entity (value change cadence)",
             "value_delta": "Capture every (value change cadence)",
-            "value_direction": "Direction (value change cadence)",
-            "conditional_reevaluate": "Re-evaluate rules during a session"
+            "value_direction": "Direction (value change cadence)"
           },
           "data_description": {
-            "capture_mode": "Time interval: a snapshot every N seconds. Entity value change: a snapshot each time a numeric entity moves by a chosen step.",
+            "capture_mode": "Time interval: a snapshot every N seconds. Fit target video length: auto-compute the interval from a duration entity. Entity value change: a snapshot each time a numeric entity moves by a chosen step.",
             "interval": "Seconds between snapshots while no rule applies.",
+            "duration_entity": "Entity that reports the expected total duration of the session while the default applies, for example a 3D printer's estimated print time sensor.",
+            "duration_type": "How to read the duration entity: as a number of seconds, minutes, or hours, or as an end-time timestamp.",
+            "target_length": "Desired length of the finished video. The capture interval is computed once when the session starts.",
+            "fallback_interval": "Seconds between snapshots when the duration entity cannot be read as a positive number at session start.",
             "value_entity": "Numeric entity that paces the frames while no rule applies.",
             "value_delta": "A frame is captured each time the value moves by at least this amount since the last frame. Use 1 for one frame per layer.",
-            "value_direction": "Which way the value must move to capture.",
-            "conditional_reevaluate": "On: the rules are re-checked while capturing and the cadence switches as soon as another rule matches. Off: the rule matching at session start is locked in for the whole session."
+            "value_direction": "Which way the value must move to capture."
           }
         },
         "custom_video": {
@@ -296,12 +310,13 @@
         "time": "Time interval",
         "time_fit": "Fit target video length",
         "value_change": "Entity value change",
-        "conditional": "Conditional (rule based)"
+        "conditional": "Conditional at start"
       }
     },
     "rule_capture_mode": {
       "options": {
         "time": "Time interval",
+        "time_fit": "Fit target video length",
         "value_change": "Entity value change"
       }
     },

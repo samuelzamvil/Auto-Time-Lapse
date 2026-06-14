@@ -17,7 +17,6 @@ from custom_components.auto_time_lapse.const import (
     ATTR_DEVICE_ID,
     CONF_AUTO_PURGE,
     CONF_CAPTURE_MODE,
-    CONF_CONDITIONAL_REEVALUATE,
     CONF_CONDITIONAL_RULES,
     CONF_DURATION_ENTITY,
     CONF_DURATION_TYPE,
@@ -1148,13 +1147,10 @@ CONDITIONAL_RULES = [
 ]
 
 
-def _make_conditional_entry(
-    base_trigger_data, rules=CONDITIONAL_RULES, reevaluate=True, **overrides
-):
+def _make_conditional_entry(base_trigger_data, rules=CONDITIONAL_RULES, **overrides):
     data = base_trigger_data | {
         CONF_CAPTURE_MODE: CaptureMode.CONDITIONAL.value,
         CONF_CONDITIONAL_RULES: rules,
-        CONF_CONDITIONAL_REEVALUATE: reevaluate,
     }
     data.pop(CONF_INTERVAL)
     return make_entry(data | overrides, title="Conditional Lapse")
@@ -1170,15 +1166,15 @@ async def _start_conditional(hass, entry):
     return get_manager(entry)
 
 
-async def test_conditional_rules_switch_live(
+async def test_conditional_rule_locked_at_session_start(
     hass, base_trigger_data, mock_camera_image, mock_render
 ):
-    """The matching rule paces the frames and switches mid-session."""
+    """The rule selected at session start is locked for the whole session."""
     entry = _make_conditional_entry(base_trigger_data)
     hass.states.async_set("sensor.current_layer", "5")
     manager = await _start_conditional(hass, entry)
-    assert manager.state is SessionState.CAPTURING
-    assert manager.frame_count == 1  # immediate first frame
+    device_id = get_device_id(hass)
+    assert manager.frame_count == 1
     interval_sensor = "sensor.conditional_lapse_capture_interval"
     assert hass.states.get(interval_sensor).state == "30.0"
 
@@ -1187,59 +1183,16 @@ async def test_conditional_rules_switch_live(
     await hass.async_block_till_done(wait_background_tasks=True)
     assert manager.frame_count == 2
 
-    # Layer 25 -> second rule: 60 s between frames, effective immediately.
-    hass.states.async_set("sensor.current_layer", "25")
-    await hass.async_block_till_done(wait_background_tasks=True)
-    assert manager.frame_count == 2  # the switch itself captures nothing
-    assert hass.states.get(interval_sensor).state == "60.0"
-
-    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=31))
-    await hass.async_block_till_done(wait_background_tasks=True)
-    assert manager.frame_count == 2  # the 30 s rule no longer paces
-
-    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=61))
-    await hass.async_block_till_done(wait_background_tasks=True)
-    assert manager.frame_count == 3
-
-    # Layer 45 -> default rule: one frame per layer increase.
-    hass.states.async_set("sensor.current_layer", "45")
-    await hass.async_block_till_done(wait_background_tasks=True)
-    assert manager.frame_count == 3
-    assert hass.states.get(interval_sensor).state == STATE_UNKNOWN
-
-    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=61))
-    await hass.async_block_till_done(wait_background_tasks=True)
-    assert manager.frame_count == 3  # time no longer paces
-
-    hass.states.async_set("sensor.current_layer", "46")
-    await hass.async_block_till_done(wait_background_tasks=True)
-    assert manager.frame_count == 4
-
-    # Below the step: no frame.
-    hass.states.async_set("sensor.current_layer", "46.5")
-    await hass.async_block_till_done(wait_background_tasks=True)
-    assert manager.frame_count == 4
-
-
-async def test_conditional_locked_without_reevaluation(
-    hass, base_trigger_data, mock_camera_image, mock_render
-):
-    """With re-evaluation off, the start rule holds until the next session."""
-    entry = _make_conditional_entry(base_trigger_data, reevaluate=False)
-    hass.states.async_set("sensor.current_layer", "5")
-    manager = await _start_conditional(hass, entry)
-    device_id = get_device_id(hass)
-    assert manager.frame_count == 1
-
-    # Crossing into the default rule's range changes nothing mid-session.
+    # Crossing into other rule ranges does NOT change the cadence mid-session.
     hass.states.async_set("sensor.current_layer", "45")
     hass.states.async_set("sensor.current_layer", "46")
     await hass.async_block_till_done(wait_background_tasks=True)
-    assert manager.frame_count == 1  # value changes do not pace
+    assert manager.frame_count == 2  # value changes do not pace
+    assert hass.states.get(interval_sensor).state == "30.0"  # still rule 1
 
     async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=31))
     await hass.async_block_till_done(wait_background_tasks=True)
-    assert manager.frame_count == 2  # the locked 30 s rule still does
+    assert manager.frame_count == 3  # the locked 30 s rule still does
 
     await hass.services.async_call(
         DOMAIN, SERVICE_STOP, {ATTR_DEVICE_ID: device_id}, blocking=True
@@ -1255,9 +1208,71 @@ async def test_conditional_locked_without_reevaluation(
 
     async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=31))
     await hass.async_block_till_done(wait_background_tasks=True)
-    assert manager.frame_count == 1
+    assert manager.frame_count == 1  # time no longer paces
 
     hass.states.async_set("sensor.current_layer", "47")
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert manager.frame_count == 2
+
+
+async def test_conditional_time_fit_rule(
+    hass, base_trigger_data, mock_camera_image, mock_render
+):
+    """A conditional TIME_FIT rule computes and freezes the interval at session start."""
+    hass.states.async_set("sensor.print_duration", "3600")  # 3600 s
+    rules = [
+        {
+            CONF_RULE_CONDITIONS: _layer_below(20),
+            CONF_CAPTURE_MODE: CaptureMode.TIME_FIT.value,
+            CONF_DURATION_ENTITY: "sensor.print_duration",
+            CONF_DURATION_TYPE: DurationType.SECONDS.value,
+            CONF_TARGET_LENGTH: 30.0,
+            CONF_FALLBACK_INTERVAL: 60,
+        },
+        {
+            CONF_CAPTURE_MODE: CaptureMode.TIME.value,
+            CONF_INTERVAL: 120,
+        },
+    ]
+    entry = _make_conditional_entry(base_trigger_data, rules=rules)
+    hass.states.async_set("sensor.current_layer", "5")
+    manager = await _start_conditional(hass, entry)
+
+    # 3600 / (30 fps * 30 s) = 4 s interval
+    interval_sensor = "sensor.conditional_lapse_capture_interval"
+    assert hass.states.get(interval_sensor).state == "4.0"
+
+    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=5))
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert manager.frame_count == 2
+
+    # Even if the duration entity value changes, the interval stays frozen.
+    hass.states.async_set("sensor.print_duration", "7200")
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert hass.states.get(interval_sensor).state == "4.0"
+
+
+async def test_conditional_time_fit_fallback(
+    hass, base_trigger_data, mock_camera_image, mock_render
+):
+    """When the duration entity is unreadable, the fallback interval is used."""
+    hass.states.async_set("sensor.print_duration", "unavailable")
+    rules = [
+        {
+            CONF_CAPTURE_MODE: CaptureMode.TIME_FIT.value,
+            CONF_DURATION_ENTITY: "sensor.print_duration",
+            CONF_DURATION_TYPE: DurationType.SECONDS.value,
+            CONF_TARGET_LENGTH: 30.0,
+            CONF_FALLBACK_INTERVAL: 45,
+        },
+    ]
+    entry = _make_conditional_entry(base_trigger_data, rules=rules)
+    manager = await _start_conditional(hass, entry)
+
+    interval_sensor = "sensor.conditional_lapse_capture_interval"
+    assert hass.states.get(interval_sensor).state == "45.0"
+
+    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=46))
     await hass.async_block_till_done(wait_background_tasks=True)
     assert manager.frame_count == 2
 
@@ -1314,10 +1329,10 @@ async def test_conditional_stop_clears_tracking(
     mock_render.assert_called_once()
 
 
-async def test_conditional_buffer_and_resume_reselects(
+async def test_conditional_buffer_and_resume_keeps_rule(
     hass, base_trigger_data, mock_camera_image, mock_render
 ):
-    """A value-change rule goes time-based in the buffer; resume re-selects."""
+    """A value-change rule goes time-based in the buffer; resume restores it."""
     entry = _make_conditional_entry(
         base_trigger_data,
         **{
@@ -1353,15 +1368,18 @@ async def test_conditional_buffer_and_resume_reselects(
     await hass.async_block_till_done(wait_background_tasks=True)
     assert manager.frame_count == 2
 
-    # The layer dropped below 20 during the buffer (new print): the resumed
-    # session must pick up the 30 s rule even though re-evaluation was
-    # suspended while buffering.
+    # The session resumes and restores the locked value-change rule.
     hass.states.async_set("sensor.current_layer", "5")
     hass.states.async_set("sensor.printer_status", "printing")
     await hass.async_block_till_done(wait_background_tasks=True)
     assert manager.state is SessionState.CAPTURING
 
+    # Time no longer paces (value-change rule restored, not the 30 s rule).
     async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=31))
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert manager.frame_count == 2
+
+    hass.states.async_set("sensor.current_layer", "6")
     await hass.async_block_till_done(wait_background_tasks=True)
     assert manager.frame_count == 3
 
