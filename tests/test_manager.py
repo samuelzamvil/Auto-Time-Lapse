@@ -55,6 +55,7 @@ from custom_components.auto_time_lapse.const import (
     ValueDirection,
     VideoQuality,
 )
+from custom_components.auto_time_lapse.renderer import RenderError
 
 from .conftest import (
     TEST_SUBENTRY_ID,
@@ -1337,3 +1338,84 @@ async def test_trigger_scale_off_overrides_service_scaling(
     await _run_capture_cycle(hass)
     assert "width" not in mock_camera_image.call_args.kwargs
     assert mock_render.call_args.kwargs["max_width"] is None
+
+
+async def test_render_failure_keeps_frames_and_fires_no_event(
+    hass, mock_entry, mock_camera_image, tmp_path
+):
+    """A failed render keeps the frames and record, and fires no event."""
+    await setup_integration(hass, mock_entry)
+    manager = get_manager(mock_entry)
+    device_id = get_device_id(hass)
+
+    events = []
+    hass.bus.async_listen(EVENT_TIMELAPSE_FINISHED, events.append)
+
+    with patch(
+        "custom_components.auto_time_lapse.manager.async_render_timelapse",
+        side_effect=RenderError("ffmpeg blew up"),
+    ):
+        await hass.services.async_call(
+            DOMAIN, SERVICE_START, {ATTR_DEVICE_ID: device_id}, blocking=True
+        )
+        await hass.async_block_till_done(wait_background_tasks=True)
+        await hass.services.async_call(
+            DOMAIN, SERVICE_STOP, {ATTR_DEVICE_ID: device_id}, blocking=True
+        )
+        await hass.async_block_till_done(wait_background_tasks=True)
+
+    assert manager.state is SessionState.IDLE
+    # Frames are kept on disk so the session can be re-rendered.
+    assert len(list(_frames_dir(tmp_path).rglob("frame_*.jpg"))) == 1
+    assert manager._last_session_dir is not None
+    assert manager._last_session_frames == 1
+    # The storage record survives so the session is salvaged after a restart.
+    assert manager._store.records(TEST_SUBENTRY_ID)
+    # No completion event for a render that never produced a video.
+    assert events == []
+
+
+async def test_atomic_frame_write_leaves_no_part_files(
+    hass, mock_entry, mock_camera_image, mock_render, tmp_path
+):
+    """The atomic write leaves only finished frames, never a .part temp."""
+    await setup_integration(hass, mock_entry)
+    manager = get_manager(mock_entry)
+    device_id = get_device_id(hass)
+
+    await hass.services.async_call(
+        DOMAIN, SERVICE_START, {ATTR_DEVICE_ID: device_id}, blocking=True
+    )
+    await hass.async_block_till_done(wait_background_tasks=True)
+    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=61))
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert manager.frame_count == 2
+
+    session_dir = manager._session_dir
+    files = list(session_dir.iterdir())
+    assert not any(f.name.endswith(".part") for f in files)
+    assert len(list(session_dir.glob("frame_*.jpg"))) == 2
+
+
+async def test_output_filename_collision_gets_unique_suffix(
+    hass, base_trigger_data, mock_camera_image, mock_render, tmp_path, freezer
+):
+    """An existing output filename gets a numeric suffix, not an overwrite."""
+    freezer.move_to("2026-06-14 12:00:00")
+    output_dir = tmp_path / "output"
+    output_dir.mkdir(parents=True)
+    timestamp = dt_util.now().strftime("%Y-%m-%d_%H-%M-%S")
+    preexisting = output_dir / f"test_lapse_{timestamp}.mp4"
+    preexisting.write_bytes(b"existing video")
+
+    entry = make_entry(base_trigger_data | {CONF_OUTPUT_DIR: str(output_dir)})
+    await setup_integration(hass, entry)
+    manager = get_manager(entry)
+
+    with patch.object(hass.config, "is_allowed_path", return_value=True):
+        await _run_capture_cycle(hass)
+
+    mock_render.assert_called_once()
+    assert manager.last_video_path == str(output_dir / f"test_lapse_{timestamp}_1.mp4")
+    # The pre-existing video is left untouched.
+    assert preexisting.read_bytes() == b"existing video"

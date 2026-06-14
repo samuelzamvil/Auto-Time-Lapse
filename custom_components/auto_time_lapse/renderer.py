@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from functools import partial
 import logging
 from pathlib import Path
 
@@ -73,12 +74,34 @@ async def async_render_timelapse(
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.PIPE,
     )
+
+    async def _remove_partial() -> None:
+        # ffmpeg runs with -y, so a failed render leaves a truncated file in
+        # the user's output dir. Drop it off the event loop, and never let a
+        # cleanup error mask the original RenderError.
+        try:
+            await hass.async_add_executor_job(
+                partial(output_path.unlink, missing_ok=True)
+            )
+        except OSError as err:
+            _LOGGER.warning(
+                "Could not remove partial render output %s: %s", output_path, err
+            )
+
     try:
         _, stderr = await asyncio.wait_for(proc.communicate(), timeout=RENDER_TIMEOUT)
     except TimeoutError:
         proc.kill()
         await proc.wait()
-        raise RenderError(f"ffmpeg timed out after {RENDER_TIMEOUT} seconds") from None
+        # The killed process buffered its stderr; a second communicate()
+        # drains it so the logged error is not empty.
+        _, stderr = await proc.communicate()
+        await _remove_partial()
+        tail = stderr.decode(errors="replace")[-2000:]
+        raise RenderError(
+            f"ffmpeg timed out after {RENDER_TIMEOUT} seconds: {tail}"
+        ) from None
     if proc.returncode != 0:
+        await _remove_partial()
         tail = stderr.decode(errors="replace")[-2000:]
         raise RenderError(f"ffmpeg exited with code {proc.returncode}: {tail}")

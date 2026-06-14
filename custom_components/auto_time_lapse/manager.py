@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, time, timedelta
 from functools import partial
 import logging
+import os
 from pathlib import Path
 import shutil
 
@@ -122,6 +123,42 @@ def _scan_existing_frames(session_dir: Path) -> int:
             continue
         next_index = max(next_index, index + 1)
     return next_index
+
+
+def _write_bytes_atomic(path: Path, data: bytes) -> None:
+    """Write data to path atomically: a sibling temp file + os.replace.
+
+    os.replace is atomic within a directory, so a crash mid-write can never
+    leave a truncated JPEG that the resume scan would count as a real frame.
+    The .part name does not match the frame_*.jpg scan pattern, so a transient
+    temp file is ignored on resume too.
+    """
+    tmp = path.with_name(path.name + ".part")
+    try:
+        tmp.write_bytes(data)
+        os.replace(tmp, path)
+    except OSError:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
+def _prepare_dir_and_unique_path(out_dir: Path, filename: str) -> Path:
+    """Create out_dir and return a non-colliding path for filename within it.
+
+    Second-granularity timestamps mean two renders can produce the same name;
+    a numeric suffix (name_1.mp4, name_2.mp4, ...) keeps ffmpeg's -y from
+    silently overwriting an existing video. Best-effort and TOCTOU-tolerant;
+    _render_lock serializes renders per manager so a real race is improbable.
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    candidate = out_dir / filename
+    if not candidate.exists():
+        return candidate
+    stem, suffix = candidate.stem, candidate.suffix
+    counter = 1
+    while (candidate := out_dir / f"{stem}_{counter}{suffix}").exists():
+        counter += 1
+    return candidate
 
 
 @dataclass(slots=True)
@@ -1237,7 +1274,7 @@ class TimelapseManager:
         if not self._capturing or self._session_dir is not session_dir:
             return
         path = session_dir / FRAME_FILENAME.format(index=self.frame_count)
-        await self.hass.async_add_executor_job(path.write_bytes, image.content)
+        await self.hass.async_add_executor_job(_write_bytes_atomic, path, image.content)
         self.frame_count += 1
         if self._buffering and self._buffer_frames_remaining is not None:
             self._buffer_frames_remaining -= 1
@@ -1332,10 +1369,9 @@ class TimelapseManager:
             media_dirs = self.hass.config.media_dirs or {}
             base = media_dirs.get("local") or self.hass.config.path("media")
             out_dir = Path(base) / OUTPUT_SUBDIR
-        await self.hass.async_add_executor_job(
-            partial(out_dir.mkdir, parents=True, exist_ok=True)
+        return await self.hass.async_add_executor_job(
+            _prepare_dir_and_unique_path, out_dir, self._build_filename()
         )
-        return out_dir / self._build_filename()
 
     def _build_filename(self) -> str:
         pattern = self._options.get(CONF_FILENAME_PATTERN) or DEFAULT_FILENAME_PATTERN
