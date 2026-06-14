@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import shutil
 
+from homeassistant.components import persistent_notification
 from homeassistant.components.camera import async_get_image
 from homeassistant.config_entries import ConfigEntry, ConfigSubentry
 from homeassistant.const import EVENT_HOMEASSISTANT_STARTED, STATE_ON
@@ -84,6 +85,7 @@ from .const import (
     DEFAULT_VIDEO_CRF,
     DEFAULT_VIDEO_PRESET,
     DOMAIN,
+    EVENT_TIMELAPSE_FAILED,
     EVENT_TIMELAPSE_FINISHED,
     FRAME_FILENAME,
     MAX_LOGGED_FAILURES,
@@ -183,6 +185,7 @@ class TimelapseManager:
         self.frame_count = 0
         self.failed_frame_count = 0
         self.last_video_path: str | None = None
+        self.last_error: str | None = None
         self.session_started_at: datetime | None = None
         self._capturing = False
         self._rendering = False
@@ -816,6 +819,7 @@ class TimelapseManager:
         self._session_dir = session_dir
         self.frame_count = 0
         self.failed_frame_count = 0
+        self.last_error = None
         self.session_started_at = dt_util.now()
         self._capturing = True
         await self._async_persist(session_dir, SessionPhase.CAPTURING)
@@ -829,6 +833,7 @@ class TimelapseManager:
         self._session_dir = info.session_dir
         self.frame_count = info.frame_count
         self.failed_frame_count = 0
+        self.last_error = None
         self.session_started_at = info.started_at or dt_util.now()
         self._capturing = True
         _LOGGER.info(
@@ -1324,8 +1329,39 @@ class TimelapseManager:
                 )
                 self._last_session_dir = session_dir
                 self._last_session_frames = frames
+                self.last_error = str(err)
+                self.hass.bus.async_fire(
+                    EVENT_TIMELAPSE_FAILED,
+                    {
+                        "entry_id": self.entry.entry_id,
+                        "subentry_id": self.subentry.subentry_id,
+                        "name": self.title,
+                        "session_dir": str(session_dir),
+                        "frame_count": frames,
+                        "error": str(err),
+                    },
+                )
+                persistent_notification.async_create(
+                    self.hass,
+                    (
+                        f"Rendering the timelapse for **{self.title}** failed:\n\n"
+                        f"{err}\n\n"
+                        f"The {frames} captured frame(s) are retained at "
+                        f"`{session_dir}` and can be re-rendered by calling the "
+                        "`auto_time_lapse.render` service for this trigger."
+                    ),
+                    title="Auto Time Lapse render failed",
+                    notification_id=(
+                        f"{DOMAIN}_render_failed_{self.subentry.subentry_id}"
+                    ),
+                )
             else:
                 self.last_video_path = str(output_path)
+                self.last_error = None
+                persistent_notification.async_dismiss(
+                    self.hass,
+                    f"{DOMAIN}_render_failed_{self.subentry.subentry_id}",
+                )
                 self.hass.bus.async_fire(
                     EVENT_TIMELAPSE_FINISHED,
                     {

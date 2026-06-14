@@ -29,6 +29,7 @@ async def async_setup_entry(
                 TimelapseStatusSensor(manager),
                 TimelapseFrameCountSensor(manager),
                 TimelapseLastVideoSensor(manager),
+                TimelapseLastErrorSensor(manager),
                 TimelapseCaptureIntervalSensor(manager),
             ],
             config_subentry_id=subentry_id,
@@ -79,6 +80,19 @@ class TimelapseLastVideoSensor(AutoTimeLapseEntity, SensorEntity):
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         return {"media_content_id": self._manager.media_content_id}
+
+
+class TimelapseLastErrorSensor(AutoTimeLapseEntity, SensorEntity):
+    """Error from the most recent failed render; clears on the next success."""
+
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, manager: TimelapseManager) -> None:
+        super().__init__(manager, "last_error")
+
+    @property
+    def native_value(self) -> str | None:
+        return self._manager.last_error
 
 
 class TimelapseCaptureIntervalSensor(AutoTimeLapseEntity, SensorEntity):
