@@ -188,6 +188,8 @@ pytest
 
 PRs welcome — CI runs hassfest, HACS validation, ruff, and the test suite.
 
+Release history lives in the [Changelog](CHANGELOG.md).
+
 ## 📄 License
 
 [MIT](LICENSE)
