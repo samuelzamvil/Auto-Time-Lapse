@@ -379,6 +379,9 @@
       "last_video": {
         "name": "Last video"
       },
+      "last_error": {
+        "name": "Last error"
+      },
       "capture_interval": {
         "name": "Capture interval"
       }

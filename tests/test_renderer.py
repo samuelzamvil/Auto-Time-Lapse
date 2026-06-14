@@ -116,3 +116,54 @@ async def test_render_failure_raises(hass):
             await async_render_timelapse(
                 hass, Path("/frames"), Path("/out/video.mp4"), fps=30
             )
+
+
+async def test_render_failure_removes_partial_output(hass, tmp_path):
+    """A nonzero exit removes the truncated file ffmpeg left behind."""
+    output = tmp_path / "video.mp4"
+    output.write_bytes(b"partial junk")  # the -y file ffmpeg leaves on failure
+    proc = _mock_proc(1, stderr=b"boom")
+    with (
+        patch(
+            "custom_components.auto_time_lapse.renderer.get_ffmpeg_manager"
+        ) as mock_manager,
+        patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=proc)),
+    ):
+        mock_manager.return_value.binary = "ffmpeg"
+        with pytest.raises(RenderError, match="boom"):
+            await async_render_timelapse(hass, tmp_path, output, fps=30)
+
+    assert not output.exists()
+
+
+async def test_render_timeout_raises_and_cleans_up(hass, tmp_path):
+    """A timeout kills ffmpeg, drains its stderr, and removes the partial."""
+    output = tmp_path / "video.mp4"
+    output.write_bytes(b"partial junk")
+    proc = MagicMock()
+    proc.communicate = AsyncMock(return_value=(b"", b"stderr tail"))
+    proc.kill = MagicMock()
+    proc.wait = AsyncMock()
+    proc.returncode = -9
+
+    async def _raise_timeout(coro, timeout):
+        # Close the unawaited communicate() coroutine before timing out.
+        coro.close()
+        raise TimeoutError
+
+    with (
+        patch(
+            "custom_components.auto_time_lapse.renderer.get_ffmpeg_manager"
+        ) as mock_manager,
+        patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=proc)),
+        patch("asyncio.wait_for", side_effect=_raise_timeout),
+    ):
+        mock_manager.return_value.binary = "ffmpeg"
+        with pytest.raises(RenderError) as exc_info:
+            await async_render_timelapse(hass, tmp_path, output, fps=30)
+
+    proc.kill.assert_called_once()
+    message = str(exc_info.value)
+    assert "timed out" in message
+    assert "stderr tail" in message
+    assert not output.exists()

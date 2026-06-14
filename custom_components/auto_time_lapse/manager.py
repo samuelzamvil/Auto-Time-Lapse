@@ -8,9 +8,11 @@ from dataclasses import dataclass
 from datetime import datetime, time, timedelta
 from functools import partial
 import logging
+import os
 from pathlib import Path
 import shutil
 
+from homeassistant.components import persistent_notification
 from homeassistant.components.camera import async_get_image
 from homeassistant.config_entries import ConfigEntry, ConfigSubentry
 from homeassistant.const import EVENT_HOMEASSISTANT_STARTED, STATE_ON
@@ -83,6 +85,7 @@ from .const import (
     DEFAULT_VIDEO_CRF,
     DEFAULT_VIDEO_PRESET,
     DOMAIN,
+    EVENT_TIMELAPSE_FAILED,
     EVENT_TIMELAPSE_FINISHED,
     FRAME_FILENAME,
     MAX_LOGGED_FAILURES,
@@ -124,6 +127,42 @@ def _scan_existing_frames(session_dir: Path) -> int:
     return next_index
 
 
+def _write_bytes_atomic(path: Path, data: bytes) -> None:
+    """Write data to path atomically: a sibling temp file + os.replace.
+
+    os.replace is atomic within a directory, so a crash mid-write can never
+    leave a truncated JPEG that the resume scan would count as a real frame.
+    The .part name does not match the frame_*.jpg scan pattern, so a transient
+    temp file is ignored on resume too.
+    """
+    tmp = path.with_name(path.name + ".part")
+    try:
+        tmp.write_bytes(data)
+        os.replace(tmp, path)
+    except OSError:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
+def _prepare_dir_and_unique_path(out_dir: Path, filename: str) -> Path:
+    """Create out_dir and return a non-colliding path for filename within it.
+
+    Second-granularity timestamps mean two renders can produce the same name;
+    a numeric suffix (name_1.mp4, name_2.mp4, ...) keeps ffmpeg's -y from
+    silently overwriting an existing video. Best-effort and TOCTOU-tolerant;
+    _render_lock serializes renders per manager so a real race is improbable.
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    candidate = out_dir / filename
+    if not candidate.exists():
+        return candidate
+    stem, suffix = candidate.stem, candidate.suffix
+    counter = 1
+    while (candidate := out_dir / f"{stem}_{counter}{suffix}").exists():
+        counter += 1
+    return candidate
+
+
 @dataclass(slots=True)
 class ResumeInfo:
     """An interrupted session found on disk at setup."""
@@ -146,6 +185,7 @@ class TimelapseManager:
         self.frame_count = 0
         self.failed_frame_count = 0
         self.last_video_path: str | None = None
+        self.last_error: str | None = None
         self.session_started_at: datetime | None = None
         self._capturing = False
         self._rendering = False
@@ -779,6 +819,7 @@ class TimelapseManager:
         self._session_dir = session_dir
         self.frame_count = 0
         self.failed_frame_count = 0
+        self.last_error = None
         self.session_started_at = dt_util.now()
         self._capturing = True
         await self._async_persist(session_dir, SessionPhase.CAPTURING)
@@ -792,6 +833,7 @@ class TimelapseManager:
         self._session_dir = info.session_dir
         self.frame_count = info.frame_count
         self.failed_frame_count = 0
+        self.last_error = None
         self.session_started_at = info.started_at or dt_util.now()
         self._capturing = True
         _LOGGER.info(
@@ -1237,7 +1279,7 @@ class TimelapseManager:
         if not self._capturing or self._session_dir is not session_dir:
             return
         path = session_dir / FRAME_FILENAME.format(index=self.frame_count)
-        await self.hass.async_add_executor_job(path.write_bytes, image.content)
+        await self.hass.async_add_executor_job(_write_bytes_atomic, path, image.content)
         self.frame_count += 1
         if self._buffering and self._buffer_frames_remaining is not None:
             self._buffer_frames_remaining -= 1
@@ -1287,8 +1329,39 @@ class TimelapseManager:
                 )
                 self._last_session_dir = session_dir
                 self._last_session_frames = frames
+                self.last_error = str(err)
+                self.hass.bus.async_fire(
+                    EVENT_TIMELAPSE_FAILED,
+                    {
+                        "entry_id": self.entry.entry_id,
+                        "subentry_id": self.subentry.subentry_id,
+                        "name": self.title,
+                        "session_dir": str(session_dir),
+                        "frame_count": frames,
+                        "error": str(err),
+                    },
+                )
+                persistent_notification.async_create(
+                    self.hass,
+                    (
+                        f"Rendering the timelapse for **{self.title}** failed:\n\n"
+                        f"{err}\n\n"
+                        f"The {frames} captured frame(s) are retained at "
+                        f"`{session_dir}` and can be re-rendered by calling the "
+                        "`auto_time_lapse.render` service for this trigger."
+                    ),
+                    title="Auto Time Lapse render failed",
+                    notification_id=(
+                        f"{DOMAIN}_render_failed_{self.subentry.subentry_id}"
+                    ),
+                )
             else:
                 self.last_video_path = str(output_path)
+                self.last_error = None
+                persistent_notification.async_dismiss(
+                    self.hass,
+                    f"{DOMAIN}_render_failed_{self.subentry.subentry_id}",
+                )
                 self.hass.bus.async_fire(
                     EVENT_TIMELAPSE_FINISHED,
                     {
@@ -1332,10 +1405,9 @@ class TimelapseManager:
             media_dirs = self.hass.config.media_dirs or {}
             base = media_dirs.get("local") or self.hass.config.path("media")
             out_dir = Path(base) / OUTPUT_SUBDIR
-        await self.hass.async_add_executor_job(
-            partial(out_dir.mkdir, parents=True, exist_ok=True)
+        return await self.hass.async_add_executor_job(
+            _prepare_dir_and_unique_path, out_dir, self._build_filename()
         )
-        return out_dir / self._build_filename()
 
     def _build_filename(self) -> str:
         pattern = self._options.get(CONF_FILENAME_PATTERN) or DEFAULT_FILENAME_PATTERN
