@@ -6,19 +6,45 @@ videos.
 
 ## The `purge_frames` service
 
-Call `auto_time_lapse.purge_frames` for any trigger device to immediately
-delete every retained frame set under that trigger's output folder. All `.mp4`
-videos are left untouched.
+`auto_time_lapse.purge_frames` immediately deletes every retained frame set
+under a trigger's output folder. All `.mp4` videos are left untouched.
+
+This is a manual action with no dedicated button or switch — you invoke it
+deliberately, the same way you would any Home Assistant service. There are two
+common ways to do that.
+
+### Developer Tools → Actions
+
+The simplest way to run it once:
+
+1. Open **Developer Tools → Actions** (older versions call this tab
+   *Services*).
+2. Search for **Auto Time Lapse: Purge frames** and select it.
+3. Pick the **trigger device** whose frames you want to clear.
+4. Click **Perform action**.
+
+The device picker only lists Auto Time Lapse trigger devices, so you always
+choose exactly which trigger's frames are removed.
+
+### From an automation or script
+
+The same action in YAML — for example to clear frames on a schedule:
 
 ```yaml
-service: auto_time_lapse.purge_frames
+action: auto_time_lapse.purge_frames
 data:
-  device_id: abc123...   # use the picker in the UI editor
+  device_id: abc123...   # use the device picker in the UI editor
 ```
 
-A purge that finds nothing to delete is a quiet no-op — safe to call from an
-automation on a schedule. The service holds the same render lock as the video
+A purge that finds nothing to delete is a quiet no-op, so it is safe to call
+on a recurring schedule. The action holds the same render lock as the video
 renderer, so it never interrupts an in-flight render.
+
+> **You can't trigger this by accident.** Nothing inside the integration calls
+> `purge_frames` on its own — no switch, sensor, automation, event, or timer is
+> wired to it. It runs only when you deliberately invoke the action with a
+> specific trigger device. (The automatic cleanup described below is a separate,
+> policy-bounded feature.)
 
 ## Auto-purge retention (per-trigger)
 
