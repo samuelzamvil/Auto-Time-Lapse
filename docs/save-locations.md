@@ -22,14 +22,24 @@ removed automatically.
 ### 2. The output directory (yours)
 
 This is the folder you choose in the trigger options (empty = `<media>/auto_time_lapse/`).
-Everything you keep ends up here, where you can see and manage it:
+Everything you keep ends up here, organised so each capture session is easy to
+find and prune. Every render gets its own **per-session folder**:
 
-- **The video**: ffmpeg writes the finished MP4 directly here, named by your
-  filename pattern (e.g. `porch_2026-06-12_18-30-00.mp4`).
+```
+<output dir>/<camera name>/<trigger name>/<date_time>/
+    ├── <video>.mp4
+    └── frame_000001.jpg, frame_000002.jpg, …   (only with Keep frames on)
+```
+
+- `<camera name>` and `<trigger name>` are the titles you gave the camera and
+  trigger, slugified (spaces and `/` become underscores).
+- `<date_time>` is the moment the render ran, e.g. `2026-06-14_18-30-00`.
+- **The video** always lands in the session folder whether or not you keep frames.
 - **The frames, if you keep them**: with **Keep frames after rendering** enabled,
-  the snapshots are moved into a folder **next to the video, named after it** —
-  `porch_2026-06-12_18-30-00.mp4` gets a `porch_2026-06-12_18-30-00/` folder with
-  all its JPEGs.
+  the snapshots move in alongside the video.
+
+A concrete example:
+`/media/auto_time_lapse/garage-cam/sunset/2026-06-14_18-30-00/sunset_2026-06-14_18-30-00.mp4`
 
 Anything under `/media` (including NAS shares added via *Settings → System →
 Storage*) shows up in the Media Browser.
@@ -38,18 +48,19 @@ Storage*) shows up in the Media Browser.
 
 1. Capture stops (switch off, stop service, schedule window end, watch entity
    inactive — after the end delay buffer, if configured).
-2. ffmpeg renders the video straight into your output directory. The frames are
-   read from the local working folder, so a slow network share never slows the
-   render down.
+2. ffmpeg renders the video into a fresh per-session folder under your output
+   directory. The frames are read from the local working folder, so a slow
+   network share never slows the render down.
 3. Only after the render **succeeds**:
-   - **Keep frames off** (default): the working folder for that session is deleted.
-   - **Keep frames on**: the frames are moved into the folder named after the
+   - **Keep frames off** (default): the working folder for that session is
+     deleted, leaving just the video in its session folder.
+   - **Keep frames on**: the frames move into the session folder next to the
      video, then the working folder is deleted.
 
 Want to re-render kept frames yourself? They are ordinary numbered JPEGs:
 
 ```bash
-ffmpeg -framerate 30 -i porch_2026-06-12_18-30-00/frame_%06d.jpg -c:v libx264 -pix_fmt yuv420p out.mp4
+ffmpeg -framerate 30 -i sunset/2026-06-14_18-30-00/frame_%06d.jpg -c:v libx264 -pix_fmt yuv420p out.mp4
 ```
 
 ## What happens when something goes wrong
@@ -62,7 +73,7 @@ Every failure mode errs on the side of **keeping your frames**:
   restart, or on demand with the `auto_time_lapse.render` service. Once a retry
   succeeds, the normal flow above resumes — including the move.
 - **The move fails** (NAS dropped, disk full): the video is already safe in the
-  output directory; the frames stay in the working folder and a warning is logged.
+  session folder; the frames stay in the working folder and a warning is logged.
   Nothing is deleted unless every frame moved successfully.
 - **Home Assistant restarts mid-session**: the session resumes where it left off.
   If it can no longer continue (the schedule window ended while HA was down), the
@@ -72,6 +83,5 @@ Every failure mode errs on the side of **keeping your frames**:
 
 The working folder can never grow unbounded: frames only exist there while a
 session is actively capturing or a failed render is waiting to be retried. Your
-output directory holds everything you chose to keep — videos, and frame folders if
-**Keep frames after rendering** is on. Kept frame folders are never deleted by the
-integration; pruning them is up to you.
+output directory holds everything you chose to keep — videos, and per-session
+frame sets if **Keep frames after rendering** is on.

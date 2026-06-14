@@ -1392,7 +1392,12 @@ class TimelapseManager:
                 self._rendering = False
                 self._notify()
 
-    async def _async_prepare_output_path(self) -> Path:
+    def _resolve_output_base(self) -> Path:
+        """Per-trigger output root: <output dir>/<camera>/<trigger>/.
+
+        Sessions live one level deeper in a per-render datetime folder, so
+        every camera's triggers keep their videos and frames separate.
+        """
         options = self._options
         if output_dir := options.get(CONF_OUTPUT_DIR):
             out_dir = Path(output_dir)
@@ -1405,8 +1410,14 @@ class TimelapseManager:
             media_dirs = self.hass.config.media_dirs or {}
             base = media_dirs.get("local") or self.hass.config.path("media")
             out_dir = Path(base) / OUTPUT_SUBDIR
+        return out_dir / slugify(self.entry.title) / slugify(self.title)
+
+    async def _async_prepare_output_path(self) -> Path:
+        session_out = self._resolve_output_base() / dt_util.now().strftime(
+            "%Y-%m-%d_%H-%M-%S"
+        )
         return await self.hass.async_add_executor_job(
-            _prepare_dir_and_unique_path, out_dir, self._build_filename()
+            _prepare_dir_and_unique_path, session_out, self._build_filename()
         )
 
     def _build_filename(self) -> str:
@@ -1437,14 +1448,14 @@ class TimelapseManager:
     async def _async_archive_frames(
         self, session_dir: Path, output_path: Path
     ) -> Path:
-        """Move kept frames into <output dir>/<video stem>/ and return that dir.
+        """Move kept frames into the video's session folder; return that folder.
 
         The working dir under the config folder is temporary storage only;
-        kept frames belong next to the video where the user can see them.
-        On failure the frames are left where they are and session_dir is
-        returned.
+        kept frames belong in the per-session output folder next to the video
+        where the user can see them. On failure the frames are left where they
+        are and session_dir is returned.
         """
-        dest = output_path.parent / output_path.stem
+        dest = output_path.parent
         if dest == session_dir:
             return session_dir
 
@@ -1452,8 +1463,12 @@ class TimelapseManager:
             dest.mkdir(parents=True, exist_ok=True)
             for frame in sorted(session_dir.glob("frame_*.jpg")):
                 shutil.move(str(frame), str(dest / frame.name))
-            # Only reached once every frame moved; the dir is expendable now.
-            shutil.rmtree(session_dir, ignore_errors=True)
+            # Remove the source only when it is the temporary working dir. On
+            # a keep-frames re-render the source is an output session folder
+            # that already contains a video; deleting it would destroy that
+            # video.
+            if session_dir.is_relative_to(self._frames_base_dir):
+                shutil.rmtree(session_dir, ignore_errors=True)
 
         try:
             await self.hass.async_add_executor_job(_move)

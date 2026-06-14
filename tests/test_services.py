@@ -100,9 +100,9 @@ async def test_render_rerenders_retained_frames(
         )
         await hass.async_block_till_done(wait_background_tasks=True)
         mock_render.assert_called_once()
-        # Frames were retained next to the rendered video.
+        # Frames were retained in the same folder as the rendered video.
         video = Path(manager.last_video_path)
-        assert manager._last_session_dir == video.parent / video.stem
+        assert manager._last_session_dir == video.parent
 
         await hass.services.async_call(
             DOMAIN, SERVICE_RENDER, {ATTR_DEVICE_ID: device_id}, blocking=True
