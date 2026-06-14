@@ -5,6 +5,28 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-06-14
+
+### Added
+
+- **`purge_frames` service.** Call `auto_time_lapse.purge_frames` for a trigger
+  device to delete all retained frame sets under its output folder. Videos are
+  never deleted.
+- **Per-trigger auto-purge retention.** With **Keep frames** on, a new
+  **Auto-purge** option and retention-mode dropdown let you automatically trim
+  old frame sets: keep the N most recent sessions, or delete frames older than N
+  days. Enforcement runs at startup, after every successful render, and once
+  every 24 hours.
+
+### Changed
+
+- **New per-session output layout.** Videos and kept frames are now stored in a
+  single per-render folder instead of a flat output directory:
+  `<output dir>/<camera>/<trigger>/<datetime>/<video>.mp4`
+  Kept frames land in the same folder as the video rather than a sibling
+  subdirectory named after the video stem. This is a prerelease, non-migrating
+  change — existing files are not moved.
+
 ## [0.4.0] - 2026-06-14
 
 The current feature set. Add a camera once, then stack independent timelapse

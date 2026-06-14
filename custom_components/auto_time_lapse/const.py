@@ -40,6 +40,10 @@ CONF_VIDEO_CRF = "video_crf"
 CONF_VIDEO_PRESET = "video_preset"
 CONF_SCALE_MODE = "scale_mode"
 CONF_MAX_WIDTH = "max_width"
+CONF_AUTO_PURGE = "auto_purge"
+CONF_PURGE_MODE = "purge_mode"
+CONF_PURGE_KEEP_SESSIONS = "purge_keep_sessions"
+CONF_PURGE_MAX_AGE_DAYS = "purge_max_age_days"
 
 # Trigger-level select option meaning "inherit the camera entry's setting".
 # Pruned in TriggerSubentryFlow._finish() and therefore never persisted.
@@ -52,6 +56,9 @@ DEFAULT_VALUE_DELTA = 1.0
 DEFAULT_OUTPUT_FPS = 30
 DEFAULT_FILENAME_PATTERN = "{name}_{timestamp}.mp4"
 DEFAULT_KEEP_FRAMES = False
+DEFAULT_AUTO_PURGE = False
+DEFAULT_PURGE_KEEP_SESSIONS = 10
+DEFAULT_PURGE_MAX_AGE_DAYS = 30
 DEFAULT_END_BUFFER_AMOUNT = 10
 DEFAULT_CONDITIONAL_REEVALUATE = True
 DEFAULT_VIDEO_CRF = 23
@@ -67,6 +74,7 @@ SERVICE_START = "start"
 SERVICE_STOP = "stop"
 SERVICE_RENDER = "render"
 SERVICE_CANCEL = "cancel"
+SERVICE_PURGE = "purge_frames"
 
 ATTR_DEVICE_ID = "device_id"
 
@@ -189,3 +197,10 @@ class ScaleMode(StrEnum):
     OFF = "off"
     CAPTURE = "capture"
     RENDER = "render"
+
+
+class PurgeMode(StrEnum):
+    """How auto-purge decides which frame sets to delete."""
+
+    KEEP_RECENT = "keep_recent"
+    MAX_AGE = "max_age"

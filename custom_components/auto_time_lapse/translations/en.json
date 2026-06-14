@@ -65,6 +65,10 @@
             "output_dir": "Output directory",
             "filename_pattern": "Filename pattern",
             "keep_frames": "Keep frames after rendering",
+            "auto_purge": "Auto-purge old frames",
+            "purge_mode": "Retention mode",
+            "purge_keep_sessions": "Sessions to keep",
+            "purge_max_age_days": "Delete frames older than",
             "video_quality": "Video quality",
             "scale_mode": "Image scaling",
             "max_width": "Maximum width"
@@ -76,6 +80,10 @@
             "output_dir": "Folder for finished videos, created automatically if it does not exist (for example /media/timelapses). Leave empty for the default media folder. Anything under /media shows up in the Media Browser, including NAS shares added via Settings > System > Storage. Paths outside a media folder must be listed in allowlist_external_dirs.",
             "filename_pattern": "Pattern for the video filename. Wrap the placeholders name, timestamp or entry_id in curly braces to insert them, as in the default value.",
             "keep_frames": "Keep the individual snapshot frames on disk after the video is rendered.",
+            "auto_purge": "Automatically delete old frame sets after each render and once a day. Only applies when Keep frames is on. Videos are never deleted.",
+            "purge_mode": "Keep the N most recent sessions' frames, or delete frames older than N days.",
+            "purge_keep_sessions": "Number of most-recent sessions whose frames are kept. Older sessions' frames are deleted.",
+            "purge_max_age_days": "Frames in sessions older than this many days are deleted.",
             "video_quality": "Use service default keeps the camera entry's setting. Higher quality means larger files and a slower render. Custom opens a step to set the raw x264 CRF and preset.",
             "scale_mode": "Use service default keeps the camera entry's setting. Off: frames and video keep the camera's native resolution. During capture: Home Assistant scales every snapshot the moment it is taken — this decodes and re-encodes each JPEG, costing CPU on every single frame for the whole session, but stores smaller frames on disk. During render: frames are stored at full size and ffmpeg downscales once while rendering the video (recommended unless frame disk usage matters).",
             "max_width": "Frames or video wider than this are scaled down, keeping the aspect ratio. Only applies when this trigger also sets its own image scaling mode."
@@ -91,6 +99,10 @@
             "output_dir": "Output directory",
             "filename_pattern": "Filename pattern",
             "keep_frames": "Keep frames after rendering",
+            "auto_purge": "Auto-purge old frames",
+            "purge_mode": "Retention mode",
+            "purge_keep_sessions": "Sessions to keep",
+            "purge_max_age_days": "Delete frames older than",
             "video_quality": "Video quality",
             "scale_mode": "Image scaling",
             "max_width": "Maximum width"
@@ -102,6 +114,10 @@
             "output_dir": "Folder for finished videos, created automatically if it does not exist (for example /media/timelapses). Leave empty for the default media folder. Anything under /media shows up in the Media Browser, including NAS shares added via Settings > System > Storage. Paths outside a media folder must be listed in allowlist_external_dirs.",
             "filename_pattern": "Pattern for the video filename. Wrap the placeholders name, timestamp or entry_id in curly braces to insert them, as in the default value.",
             "keep_frames": "Keep the individual snapshot frames on disk after the video is rendered.",
+            "auto_purge": "Automatically delete old frame sets after each render and once a day. Only applies when Keep frames is on. Videos are never deleted.",
+            "purge_mode": "Keep the N most recent sessions' frames, or delete frames older than N days.",
+            "purge_keep_sessions": "Number of most-recent sessions whose frames are kept. Older sessions' frames are deleted.",
+            "purge_max_age_days": "Frames in sessions older than this many days are deleted.",
             "video_quality": "Use service default keeps the camera entry's setting. Higher quality means larger files and a slower render. Custom opens a step to set the raw x264 CRF and preset.",
             "scale_mode": "Use service default keeps the camera entry's setting. Off: frames and video keep the camera's native resolution. During capture: Home Assistant scales every snapshot the moment it is taken — this decodes and re-encodes each JPEG, costing CPU on every single frame for the whole session, but stores smaller frames on disk. During render: frames are stored at full size and ffmpeg downscales once while rendering the video (recommended unless frame disk usage matters).",
             "max_width": "Frames or video wider than this are scaled down, keeping the aspect ratio. Only applies when this trigger also sets its own image scaling mode."
@@ -355,6 +371,12 @@
         "slower": "Slower",
         "veryslow": "Very slow"
       }
+    },
+    "purge_mode": {
+      "options": {
+        "keep_recent": "Keep the N most recent sessions",
+        "max_age": "Delete frames older than N days"
+      }
     }
   },
   "entity": {
@@ -425,6 +447,16 @@
         "device_id": {
           "name": "Trigger",
           "description": "The timelapse trigger to cancel."
+        }
+      }
+    },
+    "purge_frames": {
+      "name": "Purge frames",
+      "description": "Deletes all retained frame sets for a trigger. Videos are kept.",
+      "fields": {
+        "device_id": {
+          "name": "Trigger",
+          "description": "The timelapse trigger whose frames should be purged."
         }
       }
     }

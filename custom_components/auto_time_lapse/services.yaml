@@ -29,3 +29,11 @@ cancel:
       selector:
         device:
           integration: auto_time_lapse
+
+purge_frames:
+  fields:
+    device_id:
+      required: true
+      selector:
+        device:
+          integration: auto_time_lapse

@@ -52,7 +52,7 @@ Every trigger asks for:
 | Video frame rate | Output FPS (30 fps × 60 s interval ≈ 1 s of video per 30 min) | 30 |
 | Output directory | Created automatically; empty = `<media>/auto_time_lapse/` | media folder |
 | Filename pattern | `{name}`, `{timestamp}`, `{entry_id}` placeholders | `{name}_{timestamp}.mp4` |
-| Keep frames | Keep snapshot JPEGs after rendering — saved [next to the video](docs/save-locations.md) | off |
+| Keep frames | Keep snapshot JPEGs after rendering — saved [next to the video](docs/save-locations.md). Enables the **Auto-purge** option for automatic retention; see [Keeping disk usage under control](docs/purge-frames.md). | off |
 | Video quality | Low / Medium / High / Maximum / Custom (raw CRF + preset) | service default |
 | Image scaling | Off / During capture / During render, plus a maximum width | service default |
 
@@ -122,6 +122,7 @@ All services target a trigger via its device (a picker in the UI editor).
 | `auto_time_lapse.stop` | Stop and render the video |
 | `auto_time_lapse.render` | Re-render the most recent retained frame set |
 | `auto_time_lapse.cancel` | Abort and discard frames |
+| `auto_time_lapse.purge_frames` | Delete all retained frame JPEGs for a trigger (videos untouched) |
 
 ```yaml
 # Capture while the sun is up; the video renders itself at stop
@@ -162,7 +163,7 @@ automation:
 
 ## 📝 Behavior notes
 
-Full details on file locations and cleanup: **[Where Auto Time Lapse saves your files](docs/save-locations.md)**. Quality and scaling settings: **[Video quality and image scaling](docs/video-quality.md)**.
+Full details on file locations and cleanup: **[Where Auto Time Lapse saves your files](docs/save-locations.md)**. Quality and scaling settings: **[Video quality and image scaling](docs/video-quality.md)**. Frame retention and the `purge_frames` service: **[Keeping disk usage under control](docs/purge-frames.md)**.
 
 - Working frames live under `<config>/auto_time_lapse/<trigger id>/<session>/` — temporary storage only, never cluttering the Media Browser. With *keep frames* on, frames move into a folder next to the finished video, named after it.
 - A failed snapshot (camera offline) is skipped and counted in `failed_frames`; the session keeps going.

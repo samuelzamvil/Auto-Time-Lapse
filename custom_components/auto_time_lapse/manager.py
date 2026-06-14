@@ -42,6 +42,7 @@ import voluptuous as vol
 from .const import (
     BUFFER_SAFETY_FACTOR,
     BUFFER_SAFETY_MIN,
+    CONF_AUTO_PURGE,
     CONF_CAMERA_ENTITY,
     CONF_CAPTURE_MODE,
     CONF_CONDITIONAL_REEVALUATE,
@@ -59,6 +60,9 @@ from .const import (
     CONF_MAX_WIDTH,
     CONF_OUTPUT_DIR,
     CONF_OUTPUT_FPS,
+    CONF_PURGE_KEEP_SESSIONS,
+    CONF_PURGE_MAX_AGE_DAYS,
+    CONF_PURGE_MODE,
     CONF_RULE_CONDITIONS,
     CONF_SCALE_MODE,
     CONF_SCHEDULE_END,
@@ -73,6 +77,7 @@ from .const import (
     CONF_VIDEO_QUALITY,
     CONF_WATCH_ENTITY,
     CONF_WATCH_STATES,
+    DEFAULT_AUTO_PURGE,
     DEFAULT_CONDITIONAL_REEVALUATE,
     DEFAULT_END_BUFFER_AMOUNT,
     DEFAULT_FALLBACK_INTERVAL,
@@ -80,6 +85,8 @@ from .const import (
     DEFAULT_INTERVAL,
     DEFAULT_KEEP_FRAMES,
     DEFAULT_OUTPUT_FPS,
+    DEFAULT_PURGE_KEEP_SESSIONS,
+    DEFAULT_PURGE_MAX_AGE_DAYS,
     DEFAULT_TARGET_LENGTH,
     DEFAULT_VALUE_DELTA,
     DEFAULT_VIDEO_CRF,
@@ -96,6 +103,7 @@ from .const import (
     CaptureMode,
     DurationType,
     EndBufferMode,
+    PurgeMode,
     ScaleMode,
     SessionPhase,
     SessionState,
@@ -314,6 +322,29 @@ class TimelapseManager:
         return bool(self._options.get(CONF_KEEP_FRAMES, DEFAULT_KEEP_FRAMES))
 
     @property
+    def auto_purge(self) -> bool:
+        return bool(self._options.get(CONF_AUTO_PURGE, DEFAULT_AUTO_PURGE))
+
+    @property
+    def purge_mode(self) -> PurgeMode:
+        try:
+            return PurgeMode(self._options.get(CONF_PURGE_MODE, PurgeMode.KEEP_RECENT))
+        except ValueError:
+            return PurgeMode.KEEP_RECENT
+
+    @property
+    def purge_keep_sessions(self) -> int:
+        return int(
+            self._options.get(CONF_PURGE_KEEP_SESSIONS, DEFAULT_PURGE_KEEP_SESSIONS)
+        )
+
+    @property
+    def purge_max_age_days(self) -> int:
+        return int(
+            self._options.get(CONF_PURGE_MAX_AGE_DAYS, DEFAULT_PURGE_MAX_AGE_DAYS)
+        )
+
+    @property
     def video_params(self) -> tuple[int, str]:
         """(crf, preset): trigger override -> service default -> built-in."""
         for source in (self.subentry.data, self.entry.options):
@@ -434,6 +465,7 @@ class TimelapseManager:
         await self._async_cleanup_stale_frames(
             keep={info.session_dir.name for info in self._resume_infos}
         )
+        await self.async_enforce_retention()
 
         options = self._options
         mode = self.trigger_mode
@@ -445,6 +477,13 @@ class TimelapseManager:
             self._setup_watch(watch_entity)
         else:
             self._setup_manual()
+
+        async def _daily_retention(_now: datetime) -> None:
+            await self.async_enforce_retention()
+
+        self._unsubs.append(
+            async_track_time_interval(self.hass, _daily_retention, timedelta(days=1))
+        )
 
     async def _async_load_resume_infos(self) -> list[ResumeInfo]:
         """Read persisted session records and match them to frames on disk."""
@@ -1380,6 +1419,9 @@ class TimelapseManager:
                         session_dir, output_path
                     )
                     self._last_session_frames = frames
+                    await self.hass.async_add_executor_job(
+                        self._enforce_retention_unlocked
+                    )
                 else:
                     await self._async_remove_dir(session_dir)
                     if self._last_session_dir == session_dir:
@@ -1392,7 +1434,12 @@ class TimelapseManager:
                 self._rendering = False
                 self._notify()
 
-    async def _async_prepare_output_path(self) -> Path:
+    def _resolve_output_base(self) -> Path:
+        """Per-trigger output root: <output dir>/<camera>/<trigger>/.
+
+        Sessions live one level deeper in a per-render datetime folder, so
+        every camera's triggers keep their videos and frames separate.
+        """
         options = self._options
         if output_dir := options.get(CONF_OUTPUT_DIR):
             out_dir = Path(output_dir)
@@ -1405,8 +1452,14 @@ class TimelapseManager:
             media_dirs = self.hass.config.media_dirs or {}
             base = media_dirs.get("local") or self.hass.config.path("media")
             out_dir = Path(base) / OUTPUT_SUBDIR
+        return out_dir / slugify(self.entry.title) / slugify(self.title)
+
+    async def _async_prepare_output_path(self) -> Path:
+        session_out = self._resolve_output_base() / dt_util.now().strftime(
+            "%Y-%m-%d_%H-%M-%S"
+        )
         return await self.hass.async_add_executor_job(
-            _prepare_dir_and_unique_path, out_dir, self._build_filename()
+            _prepare_dir_and_unique_path, session_out, self._build_filename()
         )
 
     def _build_filename(self) -> str:
@@ -1437,14 +1490,14 @@ class TimelapseManager:
     async def _async_archive_frames(
         self, session_dir: Path, output_path: Path
     ) -> Path:
-        """Move kept frames into <output dir>/<video stem>/ and return that dir.
+        """Move kept frames into the video's session folder; return that folder.
 
         The working dir under the config folder is temporary storage only;
-        kept frames belong next to the video where the user can see them.
-        On failure the frames are left where they are and session_dir is
-        returned.
+        kept frames belong in the per-session output folder next to the video
+        where the user can see them. On failure the frames are left where they
+        are and session_dir is returned.
         """
-        dest = output_path.parent / output_path.stem
+        dest = output_path.parent
         if dest == session_dir:
             return session_dir
 
@@ -1452,8 +1505,12 @@ class TimelapseManager:
             dest.mkdir(parents=True, exist_ok=True)
             for frame in sorted(session_dir.glob("frame_*.jpg")):
                 shutil.move(str(frame), str(dest / frame.name))
-            # Only reached once every frame moved; the dir is expendable now.
-            shutil.rmtree(session_dir, ignore_errors=True)
+            # Remove the source only when it is the temporary working dir. On
+            # a keep-frames re-render the source is an output session folder
+            # that already contains a video; deleting it would destroy that
+            # video.
+            if session_dir.is_relative_to(self._frames_base_dir):
+                shutil.rmtree(session_dir, ignore_errors=True)
 
         try:
             await self.hass.async_add_executor_job(_move)
@@ -1467,6 +1524,137 @@ class TimelapseManager:
             )
             return session_dir
         return dest
+
+    # ------------------------------------------------------------------ purging
+
+    def _enforce_retention_unlocked(self) -> None:
+        """Delete frame files that exceed the configured retention policy.
+
+        Must be called with _render_lock already held so we never delete
+        frames that an in-flight render or re-render is reading.
+        """
+        if not (self.keep_frames and self.auto_purge):
+            return
+
+        try:
+            base = self._resolve_output_base()
+        except RenderError:
+            return
+        if not base.is_dir():
+            return
+
+        # Collect session dirs (immediate children) that still hold frames.
+        sessions_with_frames: list[tuple[str, Path]] = []
+        for child in base.iterdir():
+            if child.is_dir() and any(child.glob("frame_*.jpg")):
+                sessions_with_frames.append((child.name, child))
+
+        if not sessions_with_frames:
+            return
+
+        # Sort chronologically (names are "%Y-%m-%d_%H-%M-%S"; lexicographic
+        # order is correct for ISO timestamps).
+        sessions_with_frames.sort(key=lambda t: t[0])
+
+        if self.purge_mode is PurgeMode.KEEP_RECENT:
+            keep = self.purge_keep_sessions
+            to_purge = [p for _, p in sessions_with_frames[:-keep]] if keep else [
+                p for _, p in sessions_with_frames
+            ]
+        else:
+            cutoff = dt_util.now() - timedelta(days=self.purge_max_age_days)
+            to_purge = []
+            for name, path in sessions_with_frames:
+                try:
+                    # Folder names are "%Y-%m-%d_%H-%M-%S" in local time.
+                    dt_naive = datetime.strptime(name, "%Y-%m-%d_%H-%M-%S")
+                    ts = dt_util.as_local(dt_naive)
+                except ValueError:
+                    try:
+                        ts = dt_util.as_local(
+                            dt_util.utc_from_timestamp(path.stat().st_mtime)
+                        )
+                    except OSError:
+                        continue
+                if ts < cutoff:
+                    to_purge.append(path)
+
+        deleted = 0
+        for session_dir in to_purge:
+            for frame in session_dir.glob("frame_*.jpg"):
+                try:
+                    frame.unlink()
+                    deleted += 1
+                except OSError:
+                    pass
+            if self._last_session_dir == session_dir:
+                self._last_session_dir = None
+                self._last_session_frames = 0
+
+        if deleted:
+            _LOGGER.info(
+                "Auto-purge removed %d frame(s) for %s", deleted, self.title
+            )
+
+    async def async_enforce_retention(self) -> None:
+        """Enforce the configured retention policy (acquires render lock)."""
+        async with self._render_lock:
+            await self.hass.async_add_executor_job(self._enforce_retention_unlocked)
+
+    async def async_purge_frames(self) -> None:
+        """Delete all retained frame sets for this trigger (keeps videos)."""
+        async with self._render_lock:
+            try:
+                base = self._resolve_output_base()
+            except RenderError as err:
+                self.last_error = str(err)
+                persistent_notification.async_create(
+                    self.hass,
+                    f"Purging frames for **{self.title}** failed:\n\n{err}",
+                    title="Auto Time Lapse purge failed",
+                    notification_id=(
+                        f"{DOMAIN}_purge_failed_{self.subentry.subentry_id}"
+                    ),
+                )
+                return
+
+            def _purge() -> int:
+                if not base.is_dir():
+                    return 0
+                count = 0
+                for frame in base.rglob("frame_*.jpg"):
+                    try:
+                        frame.unlink()
+                        count += 1
+                    except OSError:
+                        pass
+                return count
+
+            try:
+                deleted = await self.hass.async_add_executor_job(_purge)
+            except Exception as err:  # noqa: BLE001
+                self.last_error = str(err)
+                persistent_notification.async_create(
+                    self.hass,
+                    f"Purging frames for **{self.title}** failed:\n\n{err}",
+                    title="Auto Time Lapse purge failed",
+                    notification_id=(
+                        f"{DOMAIN}_purge_failed_{self.subentry.subentry_id}"
+                    ),
+                )
+                return
+
+            if self._last_session_dir is not None and (
+                self._last_session_dir == base
+                or self._last_session_dir.is_relative_to(base)
+            ):
+                self._last_session_dir = None
+                self._last_session_frames = 0
+
+            if deleted:
+                _LOGGER.info(
+                    "Purged %d frame(s) for %s", deleted, self.title
+                )
 
     # ------------------------------------------------------------------ listeners
 
