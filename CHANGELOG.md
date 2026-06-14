@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.5.0] - 2026-06-14
 
+### Added
+
+- **`purge_frames` service.** Call `auto_time_lapse.purge_frames` for a trigger
+  device to delete all retained frame sets under its output folder. Videos are
+  never deleted.
+- **Per-trigger auto-purge retention.** With **Keep frames** on, a new
+  **Auto-purge** option and retention-mode dropdown let you automatically trim
+  old frame sets: keep the N most recent sessions, or delete frames older than N
+  days. Enforcement runs at startup, after every successful render, and once
+  every 24 hours.
+
 ### Changed
 
 - **New per-session output layout.** Videos and kept frames are now stored in a

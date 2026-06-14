@@ -85,3 +85,24 @@ The working folder can never grow unbounded: frames only exist there while a
 session is actively capturing or a failed render is waiting to be retried. Your
 output directory holds everything you chose to keep — videos, and per-session
 frame sets if **Keep frames after rendering** is on.
+
+## Reclaiming disk space
+
+Frame sets can be deleted at any time without affecting the finished videos.
+
+**On demand — `purge_frames` service.** Call `auto_time_lapse.purge_frames` for
+a trigger device to immediately delete every retained frame set under its output
+folder. All `.mp4` files are left in place.
+
+**Automatic retention — trigger options.** With **Keep frames** on, you can also
+enable **Auto-purge** and pick a retention policy:
+
+- **Keep the N most recent sessions** — frame sets from all but the newest N
+  sessions are deleted after each render and once a day. Videos from older
+  sessions are untouched.
+- **Delete frames older than N days** — frame sets whose session timestamp is
+  older than N days are deleted on the same schedule.
+
+Both policies enforce at startup, after every successful render, and once every
+24 hours while Home Assistant is running. An in-flight render is never
+interrupted: the lock is held during cleanup.

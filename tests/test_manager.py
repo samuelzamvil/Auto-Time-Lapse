@@ -15,6 +15,7 @@ from pytest_homeassistant_custom_component.common import async_fire_time_changed
 
 from custom_components.auto_time_lapse.const import (
     ATTR_DEVICE_ID,
+    CONF_AUTO_PURGE,
     CONF_CAPTURE_MODE,
     CONF_CONDITIONAL_REEVALUATE,
     CONF_CONDITIONAL_RULES,
@@ -29,6 +30,9 @@ from custom_components.auto_time_lapse.const import (
     CONF_KEEP_FRAMES,
     CONF_MAX_WIDTH,
     CONF_OUTPUT_DIR,
+    CONF_PURGE_KEEP_SESSIONS,
+    CONF_PURGE_MAX_AGE_DAYS,
+    CONF_PURGE_MODE,
     CONF_RULE_CONDITIONS,
     CONF_SCALE_MODE,
     CONF_TARGET_LENGTH,
@@ -45,6 +49,7 @@ from custom_components.auto_time_lapse.const import (
     EVENT_TIMELAPSE_FAILED,
     EVENT_TIMELAPSE_FINISHED,
     SERVICE_CANCEL,
+    SERVICE_PURGE,
     SERVICE_RENDER,
     SERVICE_START,
     SERVICE_STOP,
@@ -52,6 +57,7 @@ from custom_components.auto_time_lapse.const import (
     CaptureMode,
     DurationType,
     EndBufferMode,
+    PurgeMode,
     ScaleMode,
     SessionState,
     TriggerMode,
@@ -1593,3 +1599,150 @@ async def test_output_filename_collision_gets_unique_suffix(
     )
     # The pre-existing video is left untouched.
     assert preexisting.read_bytes() == b"existing video"
+
+
+async def test_purge_frames_deletes_jpgs_keeps_videos(
+    hass, base_trigger_data, mock_camera_image, mock_render, tmp_path
+):
+    """purge_frames removes frame JPEGs but leaves MP4 videos intact."""
+    output_dir = tmp_path / "output"
+    entry = make_entry(
+        base_trigger_data
+        | {CONF_KEEP_FRAMES: True, CONF_OUTPUT_DIR: str(output_dir)}
+    )
+    await setup_integration(hass, entry)
+    manager = get_manager(entry)
+    device_id = get_device_id(hass)
+
+    with patch.object(hass.config, "is_allowed_path", return_value=True):
+        await hass.services.async_call(
+            DOMAIN, SERVICE_START, {ATTR_DEVICE_ID: device_id}, blocking=True
+        )
+        await hass.async_block_till_done(wait_background_tasks=True)
+        await hass.services.async_call(
+            DOMAIN, SERVICE_STOP, {ATTR_DEVICE_ID: device_id}, blocking=True
+        )
+        await hass.async_block_till_done(wait_background_tasks=True)
+
+    session_dir = Path(manager.last_video_path).parent
+    # Simulate video written by ffmpeg.
+    video = Path(manager.last_video_path)
+    video.write_bytes(b"fake-video")
+
+    assert any(session_dir.glob("frame_*.jpg"))
+
+    with patch.object(hass.config, "is_allowed_path", return_value=True):
+        await hass.services.async_call(
+            DOMAIN, SERVICE_PURGE, {ATTR_DEVICE_ID: device_id}, blocking=True
+        )
+        await hass.async_block_till_done(wait_background_tasks=True)
+
+    # All frames gone, video untouched, _last_session_dir cleared.
+    assert not any(session_dir.glob("frame_*.jpg"))
+    assert video.read_bytes() == b"fake-video"
+    assert manager._last_session_dir is None
+    assert manager._last_session_frames == 0
+
+
+async def test_auto_purge_keep_recent_removes_oldest(
+    hass, base_trigger_data, mock_camera_image, mock_render, tmp_path, freezer
+):
+    """KEEP_RECENT=1 purges frames from older sessions, keeps newest."""
+    output_dir = tmp_path / "output"
+    entry = make_entry(
+        base_trigger_data
+        | {
+            CONF_KEEP_FRAMES: True,
+            CONF_OUTPUT_DIR: str(output_dir),
+            CONF_AUTO_PURGE: True,
+            CONF_PURGE_MODE: PurgeMode.KEEP_RECENT,
+            CONF_PURGE_KEEP_SESSIONS: 1,
+        }
+    )
+    await setup_integration(hass, entry)
+
+    manager = get_manager(entry)
+    with patch.object(hass.config, "is_allowed_path", return_value=True):
+        # First session.
+        freezer.move_to("2026-06-14 10:00:00")
+        await _run_capture_cycle(hass)
+        await hass.async_block_till_done(wait_background_tasks=True)
+        first_session = Path(manager.last_video_path).parent
+
+        # Second session — triggers purge of the first.
+        freezer.move_to("2026-06-14 11:00:00")
+        await _run_capture_cycle(hass)
+        await hass.async_block_till_done(wait_background_tasks=True)
+        second_session = Path(manager.last_video_path).parent
+
+    # Oldest session's frames deleted; newest kept.
+    assert not any(first_session.glob("frame_*.jpg")), "old frames should be purged"
+    assert any(second_session.glob("frame_*.jpg")), "new frames should be retained"
+
+
+async def test_auto_purge_max_age_removes_old_sessions(
+    hass, base_trigger_data, mock_camera_image, mock_render, tmp_path, freezer
+):
+    """MAX_AGE purges frames from sessions older than the configured threshold."""
+    output_dir = tmp_path / "output"
+    entry = make_entry(
+        base_trigger_data
+        | {
+            CONF_KEEP_FRAMES: True,
+            CONF_OUTPUT_DIR: str(output_dir),
+            CONF_AUTO_PURGE: True,
+            CONF_PURGE_MODE: PurgeMode.MAX_AGE,
+            CONF_PURGE_MAX_AGE_DAYS: 7,
+        }
+    )
+    await setup_integration(hass, entry)
+
+    manager = get_manager(entry)
+    with patch.object(hass.config, "is_allowed_path", return_value=True):
+        # Old session — 10 days ago.
+        freezer.move_to("2026-06-04 10:00:00")
+        await _run_capture_cycle(hass)
+        await hass.async_block_till_done(wait_background_tasks=True)
+        old_session = Path(manager.last_video_path).parent
+
+        # Recent session — triggers purge of the old one.
+        freezer.move_to("2026-06-14 10:00:00")
+        await _run_capture_cycle(hass)
+        await hass.async_block_till_done(wait_background_tasks=True)
+        recent_session = Path(manager.last_video_path).parent
+
+    assert not any(old_session.glob("frame_*.jpg")), "old frames should be purged"
+    assert any(recent_session.glob("frame_*.jpg")), "recent frames should be retained"
+
+
+async def test_auto_purge_daily_timer_enforces_retention(
+    hass, base_trigger_data, mock_camera_image, mock_render, tmp_path
+):
+    """The daily timer fires retention enforcement without a new render."""
+    output_dir = tmp_path / "output"
+    entry = make_entry(
+        base_trigger_data
+        | {
+            CONF_KEEP_FRAMES: True,
+            CONF_OUTPUT_DIR: str(output_dir),
+            CONF_AUTO_PURGE: True,
+            CONF_PURGE_MODE: PurgeMode.KEEP_RECENT,
+            CONF_PURGE_KEEP_SESSIONS: 0,
+        }
+    )
+    await setup_integration(hass, entry)
+
+    # Plant a fake retained frame set directly in the output tree.
+    base = output_dir / "demo_camera" / "test_lapse"
+    session_dir = base / "old_session"
+    session_dir.mkdir(parents=True)
+    (session_dir / "frame_000001.jpg").write_bytes(b"retained")
+
+    assert any(session_dir.glob("frame_*.jpg"))
+
+    # Fire the daily timer; enforcement must purge the retained frames.
+    with patch.object(hass.config, "is_allowed_path", return_value=True):
+        async_fire_time_changed(hass, dt_util.utcnow() + timedelta(days=1, seconds=1))
+        await hass.async_block_till_done(wait_background_tasks=True)
+
+    assert not any(session_dir.glob("frame_*.jpg")), "daily timer should purge frames"

@@ -35,6 +35,7 @@ from homeassistant.helpers.selector import (
 import voluptuous as vol
 
 from .const import (
+    CONF_AUTO_PURGE,
     CONF_CAMERA_ENTITY,
     CONF_CAPTURE_MODE,
     CONF_CONDITIONAL_REEVALUATE,
@@ -52,6 +53,9 @@ from .const import (
     CONF_MAX_WIDTH,
     CONF_OUTPUT_DIR,
     CONF_OUTPUT_FPS,
+    CONF_PURGE_KEEP_SESSIONS,
+    CONF_PURGE_MAX_AGE_DAYS,
+    CONF_PURGE_MODE,
     CONF_RULE_ADD_ANOTHER,
     CONF_RULE_CONDITIONS,
     CONF_SCALE_MODE,
@@ -67,6 +71,7 @@ from .const import (
     CONF_VIDEO_QUALITY,
     CONF_WATCH_ENTITY,
     CONF_WATCH_STATES,
+    DEFAULT_AUTO_PURGE,
     DEFAULT_CONDITIONAL_REEVALUATE,
     DEFAULT_END_BUFFER_AMOUNT,
     DEFAULT_FALLBACK_INTERVAL,
@@ -74,6 +79,8 @@ from .const import (
     DEFAULT_INTERVAL,
     DEFAULT_KEEP_FRAMES,
     DEFAULT_OUTPUT_FPS,
+    DEFAULT_PURGE_KEEP_SESSIONS,
+    DEFAULT_PURGE_MAX_AGE_DAYS,
     DEFAULT_TARGET_LENGTH,
     DEFAULT_VALUE_DELTA,
     DEFAULT_VIDEO_CRF,
@@ -87,6 +94,7 @@ from .const import (
     CaptureMode,
     DurationType,
     EndBufferMode,
+    PurgeMode,
     ScaleMode,
     TriggerMode,
     ValueDirection,
@@ -215,6 +223,42 @@ def _trigger_schema() -> vol.Schema:
             vol.Required(
                 CONF_KEEP_FRAMES, default=DEFAULT_KEEP_FRAMES
             ): BooleanSelector(),
+            vol.Required(
+                CONF_AUTO_PURGE, default=DEFAULT_AUTO_PURGE
+            ): BooleanSelector(),
+            vol.Required(
+                CONF_PURGE_MODE, default=PurgeMode.KEEP_RECENT.value
+            ): SelectSelector(
+                SelectSelectorConfig(
+                    options=[m.value for m in PurgeMode],
+                    mode=SelectSelectorMode.DROPDOWN,
+                    translation_key="purge_mode",
+                )
+            ),
+            vol.Required(
+                CONF_PURGE_KEEP_SESSIONS, default=DEFAULT_PURGE_KEEP_SESSIONS
+            ): vol.All(
+                NumberSelector(
+                    NumberSelectorConfig(
+                        min=1, max=365, step=1, mode=NumberSelectorMode.BOX
+                    )
+                ),
+                vol.Coerce(int),
+            ),
+            vol.Required(
+                CONF_PURGE_MAX_AGE_DAYS, default=DEFAULT_PURGE_MAX_AGE_DAYS
+            ): vol.All(
+                NumberSelector(
+                    NumberSelectorConfig(
+                        min=1,
+                        max=3650,
+                        step=1,
+                        unit_of_measurement="d",
+                        mode=NumberSelectorMode.BOX,
+                    )
+                ),
+                vol.Coerce(int),
+            ),
             **_quality_fields(with_inherit=True),
         }
     )
@@ -905,6 +949,21 @@ class TriggerSubentryFlow(ConfigSubentryFlow):
             # An explicit off override of a service-level capture/render
             # setting must survive, unlike the inherit sentinel.
             data.pop(CONF_MAX_WIDTH, None)
+        if not data.get(CONF_KEEP_FRAMES):
+            data.pop(CONF_AUTO_PURGE, None)
+            data.pop(CONF_PURGE_MODE, None)
+            data.pop(CONF_PURGE_KEEP_SESSIONS, None)
+            data.pop(CONF_PURGE_MAX_AGE_DAYS, None)
+        elif not data.get(CONF_AUTO_PURGE):
+            data.pop(CONF_PURGE_MODE, None)
+            data.pop(CONF_PURGE_KEEP_SESSIONS, None)
+            data.pop(CONF_PURGE_MAX_AGE_DAYS, None)
+        else:
+            purge_mode = data.get(CONF_PURGE_MODE)
+            if purge_mode == PurgeMode.KEEP_RECENT:
+                data.pop(CONF_PURGE_MAX_AGE_DAYS, None)
+            elif purge_mode == PurgeMode.MAX_AGE:
+                data.pop(CONF_PURGE_KEEP_SESSIONS, None)
         if self._is_new:
             return self.async_create_entry(title=title, data=data)
         return self.async_update_and_abort(

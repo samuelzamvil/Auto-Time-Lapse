@@ -14,6 +14,7 @@ from .const import (
     ATTR_DEVICE_ID,
     DOMAIN,
     SERVICE_CANCEL,
+    SERVICE_PURGE,
     SERVICE_RENDER,
     SERVICE_START,
     SERVICE_STOP,
@@ -70,7 +71,11 @@ def async_setup_services(hass: HomeAssistant) -> None:
     async def _cancel(call: ServiceCall) -> None:
         await _get_manager(hass, call).async_cancel()
 
+    async def _purge(call: ServiceCall) -> None:
+        await _get_manager(hass, call).async_purge_frames()
+
     hass.services.async_register(DOMAIN, SERVICE_START, _start, schema=_BASE_SCHEMA)
     hass.services.async_register(DOMAIN, SERVICE_STOP, _stop, schema=_BASE_SCHEMA)
     hass.services.async_register(DOMAIN, SERVICE_RENDER, _render, schema=_BASE_SCHEMA)
     hass.services.async_register(DOMAIN, SERVICE_CANCEL, _cancel, schema=_BASE_SCHEMA)
+    hass.services.async_register(DOMAIN, SERVICE_PURGE, _purge, schema=_BASE_SCHEMA)
