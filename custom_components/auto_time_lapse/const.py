@@ -31,7 +31,6 @@ CONF_END_BUFFER_AMOUNT = "end_buffer_amount"
 CONF_END_BUFFER_INTERVAL = "end_buffer_interval"
 CONF_END_BUFFER_RETRIGGER = "end_buffer_retrigger"
 CONF_CONDITIONAL_RULES = "conditional_rules"
-CONF_CONDITIONAL_REEVALUATE = "conditional_reevaluate"
 CONF_RULE_CONDITIONS = "conditions"
 CONF_RULE_ADD_ANOTHER = "add_another"
 CONF_DURATION_TYPE = "duration_type"
@@ -60,7 +59,6 @@ DEFAULT_AUTO_PURGE = False
 DEFAULT_PURGE_KEEP_SESSIONS = 10
 DEFAULT_PURGE_MAX_AGE_DAYS = 30
 DEFAULT_END_BUFFER_AMOUNT = 10
-DEFAULT_CONDITIONAL_REEVALUATE = True
 DEFAULT_VIDEO_CRF = 23
 DEFAULT_VIDEO_PRESET = "medium"
 
@@ -122,9 +120,9 @@ class CaptureMode(StrEnum):
     CONDITIONAL = "conditional"
 
 
-# Cadences a conditional rule may use (TIME_FIT's per-session frozen
-# interval is incompatible with live rule switching).
-RULE_CAPTURE_MODES = (CaptureMode.TIME, CaptureMode.VALUE_CHANGE)
+# Cadences a conditional rule may use. The rule is locked at session start
+# so TIME_FIT can freeze its computed interval for the whole session.
+RULE_CAPTURE_MODES = (CaptureMode.TIME, CaptureMode.TIME_FIT, CaptureMode.VALUE_CHANGE)
 
 
 class ValueDirection(StrEnum):
