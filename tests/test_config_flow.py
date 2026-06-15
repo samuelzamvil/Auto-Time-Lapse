@@ -25,7 +25,6 @@ from custom_components.auto_time_lapse.const import (
     CONF_MAX_WIDTH,
     CONF_OUTPUT_DIR,
     CONF_OUTPUT_FPS,
-    CONF_RULE_ADD_ANOTHER,
     CONF_RULE_CONDITIONS,
     CONF_SCALE_MODE,
     CONF_SCHEDULE_END,
@@ -70,6 +69,60 @@ TRIGGER_INPUT = {
     CONF_FILENAME_PATTERN: "{name}_{timestamp}.mp4",
     CONF_KEEP_FRAMES: False,
 }
+
+# The reconfigure hub's "Basics" step is a subset of the main form.
+BASICS_INPUT = {
+    CONF_NAME: "Garden",
+    CONF_TRIGGER_MODE: TriggerMode.MANUAL.value,
+    CONF_CAPTURE_MODE: CaptureMode.TIME.value,
+    CONF_OUTPUT_FPS: 24,
+    CONF_FILENAME_PATTERN: "{name}_{timestamp}.mp4",
+}
+
+
+async def _open_reconfigure(hass, entry, subentry_id):
+    """Start a reconfigure flow; it lands on the editing hub menu."""
+    return await hass.config_entries.subentries.async_init(
+        (entry.entry_id, SUBENTRY_TYPE_TRIGGER),
+        context={
+            "source": config_entries.SOURCE_RECONFIGURE,
+            "subentry_id": subentry_id,
+        },
+    )
+
+
+async def _menu(hass, result, option):
+    """Pick a menu option from a hub/overview menu step."""
+    return await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {"next_step_id": option}
+    )
+
+
+async def _add_conditional_rule(hass, result, conditions, mode, cadence):
+    """Drive the two-hop rule editor from the conditional overview."""
+    result = await _menu(hass, result, "rule_add")
+    assert result["step_id"] == "rule_conditions"
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        {CONF_RULE_CONDITIONS: conditions, CONF_CAPTURE_MODE: mode},
+    )
+    assert result["step_id"] == "rule_cadence"
+    return await hass.config_entries.subentries.async_configure(
+        result["flow_id"], cadence
+    )
+
+
+async def _set_conditional_default(hass, result, mode, cadence):
+    """Set the default (else) cadence from the conditional overview."""
+    result = await _menu(hass, result, "rule_default")
+    assert result["step_id"] == "rule_conditions"
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {CONF_CAPTURE_MODE: mode}
+    )
+    assert result["step_id"] == "rule_cadence"
+    return await hass.config_entries.subentries.async_configure(
+        result["flow_id"], cadence
+    )
 
 
 async def test_user_flow_creates_camera_entry(hass):
@@ -347,35 +400,35 @@ async def test_trigger_subentry_fit_length(hass, mock_entry):
 
 
 async def test_trigger_subentry_reconfigure(hass, mock_entry):
-    """Reconfiguring a trigger updates its data and strips stale mode keys."""
+    """Reconfiguring via the hub: edit basics, switch mode, then save."""
     await _setup_loaded_entry(hass, mock_entry)
     subentry_id = next(iter(mock_entry.subentries))
 
-    result = await hass.config_entries.subentries.async_init(
-        (mock_entry.entry_id, SUBENTRY_TYPE_TRIGGER),
-        context={
-            "source": config_entries.SOURCE_RECONFIGURE,
-            "subentry_id": subentry_id,
-        },
-    )
-    assert result["type"] is FlowResultType.FORM
-    assert result["step_id"] == "reconfigure"
+    result = await _open_reconfigure(hass, mock_entry, subentry_id)
+    assert result["type"] is FlowResultType.MENU
+    assert result["step_id"] == "hub"
 
+    # Edit the basics; switching to schedule routes straight into its setup.
+    result = await _menu(hass, result, "basics")
+    assert result["step_id"] == "basics"
     result = await hass.config_entries.subentries.async_configure(
         result["flow_id"],
-        dict(TRIGGER_INPUT)
+        dict(BASICS_INPUT)
         | {
             CONF_NAME: "Renamed",
             CONF_TRIGGER_MODE: TriggerMode.SCHEDULE.value,
         },
     )
-    result = await _pass_interval_step(hass, result)
     assert result["step_id"] == "schedule"
     result = await hass.config_entries.subentries.async_configure(
         result["flow_id"],
         {CONF_SCHEDULE_START: "06:00:00", CONF_SCHEDULE_END: "20:00:00"},
     )
-    result = await _pass_end_buffer_step(hass, result)
+    # Editing returns to the hub rather than walking the rest of the wizard.
+    assert result["type"] is FlowResultType.MENU
+    assert result["step_id"] == "hub"
+
+    result = await _menu(hass, result, "save")
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "reconfigure_successful"
 
@@ -383,6 +436,32 @@ async def test_trigger_subentry_reconfigure(hass, mock_entry):
     assert subentry.title == "Renamed"
     assert subentry.data[CONF_TRIGGER_MODE] == TriggerMode.SCHEDULE.value
     assert subentry.data[CONF_SCHEDULE_START] == "06:00:00"
+    # Untouched cadence config is preserved.
+    assert subentry.data[CONF_INTERVAL] == 60
+
+
+async def test_reconfigure_hub_edits_only_basics(hass, mock_entry):
+    """Editing one section leaves every other stored key untouched."""
+    await _setup_loaded_entry(hass, mock_entry)
+    subentry_id = next(iter(mock_entry.subentries))
+    before = dict(mock_entry.subentries[subentry_id].data)
+
+    result = await _open_reconfigure(hass, mock_entry, subentry_id)
+    result = await _menu(hass, result, "basics")
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], dict(BASICS_INPUT) | {CONF_NAME: "Renamed"}
+    )
+    assert result["type"] is FlowResultType.MENU
+    result = await _menu(hass, result, "save")
+    assert result["type"] is FlowResultType.ABORT
+
+    subentry = mock_entry.subentries[subentry_id]
+    assert subentry.title == "Renamed"
+    # Output fps changed via basics; everything else is identical.
+    assert subentry.data[CONF_OUTPUT_FPS] == 24
+    assert {k: v for k, v in subentry.data.items() if k != CONF_OUTPUT_FPS} == {
+        k: v for k, v in before.items() if k != CONF_OUTPUT_FPS
+    }
 
 
 async def test_trigger_subentry_manual_skips_buffer_step(hass, mock_entry):
@@ -509,42 +588,30 @@ async def test_trigger_subentry_conditional(hass, mock_entry):
         result["flow_id"],
         dict(TRIGGER_INPUT) | {CONF_CAPTURE_MODE: CaptureMode.CONDITIONAL.value},
     )
-    assert result["type"] is FlowResultType.FORM
-    assert result["step_id"] == "conditional_rule"
+    assert result["type"] is FlowResultType.MENU
+    assert result["step_id"] == "conditional_rules"
 
-    result = await hass.config_entries.subentries.async_configure(
-        result["flow_id"],
-        {
-            CONF_RULE_CONDITIONS: LAYER_BELOW_20,
-            CONF_CAPTURE_MODE: CaptureMode.TIME.value,
-            CONF_INTERVAL: 30,
-            CONF_RULE_ADD_ANOTHER: True,
-        },
+    result = await _add_conditional_rule(
+        hass, result, LAYER_BELOW_20, CaptureMode.TIME.value, {CONF_INTERVAL: 30}
     )
-    assert result["type"] is FlowResultType.FORM
-    assert result["step_id"] == "conditional_rule"
-
-    result = await hass.config_entries.subentries.async_configure(
-        result["flow_id"],
-        {
-            CONF_RULE_CONDITIONS: LAYER_BELOW_40,
-            CONF_CAPTURE_MODE: CaptureMode.TIME.value,
-            CONF_INTERVAL: 60,
-            CONF_RULE_ADD_ANOTHER: False,
-        },
+    assert result["type"] is FlowResultType.MENU
+    result = await _add_conditional_rule(
+        hass, result, LAYER_BELOW_40, CaptureMode.TIME.value, {CONF_INTERVAL: 60}
     )
-    assert result["type"] is FlowResultType.FORM
-    assert result["step_id"] == "conditional_default"
-
-    result = await hass.config_entries.subentries.async_configure(
-        result["flow_id"],
+    assert result["type"] is FlowResultType.MENU
+    result = await _set_conditional_default(
+        hass,
+        result,
+        CaptureMode.VALUE_CHANGE.value,
         {
-            CONF_CAPTURE_MODE: CaptureMode.VALUE_CHANGE.value,
             CONF_VALUE_ENTITY: "sensor.current_layer",
             CONF_VALUE_DELTA: 1,
             CONF_VALUE_DIRECTION: ValueDirection.INCREASE.value,
         },
     )
+    assert result["type"] is FlowResultType.MENU
+
+    result = await _menu(hass, result, "cadence_done")
     assert result["type"] is FlowResultType.CREATE_ENTRY
     subentry = next(
         s for s in mock_entry.subentries.values() if s.title == "Garden"
@@ -572,53 +639,46 @@ async def test_trigger_subentry_conditional(hass, mock_entry):
 
 
 async def test_conditional_rule_validation(hass, mock_entry):
-    """Rules need conditions, and value-change rules need entity and step."""
+    """Empty conditions and a non-positive step are rejected in each hop."""
     await _setup_loaded_entry(hass, mock_entry)
     result = await _start_trigger_flow(hass, mock_entry)
     result = await hass.config_entries.subentries.async_configure(
         result["flow_id"],
         dict(TRIGGER_INPUT) | {CONF_CAPTURE_MODE: CaptureMode.CONDITIONAL.value},
     )
+    result = await _menu(hass, result, "rule_add")
+    assert result["step_id"] == "rule_conditions"
 
+    # First hop: conditions are required.
     result = await hass.config_entries.subentries.async_configure(
         result["flow_id"],
-        {
-            CONF_RULE_CONDITIONS: [],
-            CONF_CAPTURE_MODE: CaptureMode.VALUE_CHANGE.value,
-            CONF_VALUE_DELTA: 0,
-            CONF_RULE_ADD_ANOTHER: False,
-        },
+        {CONF_RULE_CONDITIONS: [], CONF_CAPTURE_MODE: CaptureMode.VALUE_CHANGE.value},
     )
     assert result["type"] is FlowResultType.FORM
-    assert result["errors"] == {
-        CONF_RULE_CONDITIONS: "conditions_required",
-        CONF_VALUE_ENTITY: "value_entity_required",
-        CONF_VALUE_DELTA: "delta_positive",
-    }
+    assert result["step_id"] == "rule_conditions"
+    assert result["errors"] == {CONF_RULE_CONDITIONS: "conditions_required"}
 
     result = await hass.config_entries.subentries.async_configure(
         result["flow_id"],
         {
             CONF_RULE_CONDITIONS: LAYER_BELOW_20,
-            CONF_CAPTURE_MODE: CaptureMode.TIME.value,
-            CONF_INTERVAL: 30,
-            CONF_RULE_ADD_ANOTHER: False,
+            CONF_CAPTURE_MODE: CaptureMode.VALUE_CHANGE.value,
         },
     )
-    assert result["step_id"] == "conditional_default"
+    assert result["step_id"] == "rule_cadence"
 
+    # Second hop: the value step must be positive.
     result = await hass.config_entries.subentries.async_configure(
         result["flow_id"],
         {
-            CONF_CAPTURE_MODE: CaptureMode.VALUE_CHANGE.value,
+            CONF_VALUE_ENTITY: "sensor.current_layer",
             CONF_VALUE_DELTA: 0,
+            CONF_VALUE_DIRECTION: ValueDirection.ANY.value,
         },
     )
     assert result["type"] is FlowResultType.FORM
-    assert result["errors"] == {
-        CONF_VALUE_ENTITY: "value_entity_required",
-        CONF_VALUE_DELTA: "delta_positive",
-    }
+    assert result["step_id"] == "rule_cadence"
+    assert result["errors"] == {CONF_VALUE_DELTA: "delta_positive"}
 
 
 async def test_conditional_rule_time_fit(hass, mock_entry):
@@ -629,44 +689,46 @@ async def test_conditional_rule_time_fit(hass, mock_entry):
         result["flow_id"],
         dict(TRIGGER_INPUT) | {CONF_CAPTURE_MODE: CaptureMode.CONDITIONAL.value},
     )
-    assert result["step_id"] == "conditional_rule"
+    assert result["step_id"] == "conditional_rules"
 
-    # Submit a TIME_FIT rule without a duration entity: should fail validation.
+    result = await _menu(hass, result, "rule_add")
     result = await hass.config_entries.subentries.async_configure(
         result["flow_id"],
         {
             CONF_RULE_CONDITIONS: LAYER_BELOW_20,
             CONF_CAPTURE_MODE: CaptureMode.TIME_FIT.value,
+        },
+    )
+    assert result["step_id"] == "rule_cadence"
+
+    # A non-positive target length is rejected.
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        {
+            CONF_DURATION_ENTITY: "sensor.print_time",
+            CONF_DURATION_TYPE: DurationType.SECONDS.value,
             CONF_TARGET_LENGTH: 0,
-            CONF_RULE_ADD_ANOTHER: False,
+            CONF_FALLBACK_INTERVAL: 60,
         },
     )
     assert result["type"] is FlowResultType.FORM
-    assert CONF_DURATION_ENTITY in result["errors"]
-    assert CONF_TARGET_LENGTH in result["errors"]
+    assert result["errors"] == {CONF_TARGET_LENGTH: "length_positive"}
 
-    # Submit a valid TIME_FIT rule.
     result = await hass.config_entries.subentries.async_configure(
         result["flow_id"],
         {
-            CONF_RULE_CONDITIONS: LAYER_BELOW_20,
-            CONF_CAPTURE_MODE: CaptureMode.TIME_FIT.value,
             CONF_DURATION_ENTITY: "sensor.print_time",
             CONF_DURATION_TYPE: DurationType.SECONDS.value,
             CONF_TARGET_LENGTH: 30.0,
             CONF_FALLBACK_INTERVAL: 60,
-            CONF_RULE_ADD_ANOTHER: False,
         },
     )
-    assert result["step_id"] == "conditional_default"
+    assert result["type"] is FlowResultType.MENU
 
-    result = await hass.config_entries.subentries.async_configure(
-        result["flow_id"],
-        {
-            CONF_CAPTURE_MODE: CaptureMode.TIME.value,
-            CONF_INTERVAL: 120,
-        },
+    result = await _set_conditional_default(
+        hass, result, CaptureMode.TIME.value, {CONF_INTERVAL: 120}
     )
+    result = await _menu(hass, result, "cadence_done")
     assert result["type"] is FlowResultType.CREATE_ENTRY
 
     subentry = next(s for s in mock_entry.subentries.values() if s.title == "Garden")
@@ -676,6 +738,83 @@ async def test_conditional_rule_time_fit(hass, mock_entry):
     assert rules[0][CONF_TARGET_LENGTH] == 30.0
     assert rules[0][CONF_FALLBACK_INTERVAL] == 60
     assert CONF_INTERVAL not in rules[0]
+    assert rules[1][CONF_INTERVAL] == 120
+    assert CONF_RULE_CONDITIONS not in rules[1]
+
+
+async def test_reconfigure_edit_and_delete_conditional_rule(hass):
+    """The overview can edit one rule and delete another, preserving order."""
+    entry = make_entry(
+        {
+            CONF_TRIGGER_MODE: TriggerMode.MANUAL.value,
+            CONF_CAPTURE_MODE: CaptureMode.CONDITIONAL.value,
+            CONF_CONDITIONAL_RULES: [
+                {
+                    CONF_RULE_CONDITIONS: LAYER_BELOW_20,
+                    CONF_CAPTURE_MODE: CaptureMode.TIME.value,
+                    CONF_INTERVAL: 30,
+                },
+                {
+                    CONF_RULE_CONDITIONS: LAYER_BELOW_40,
+                    CONF_CAPTURE_MODE: CaptureMode.TIME.value,
+                    CONF_INTERVAL: 60,
+                },
+                {
+                    CONF_CAPTURE_MODE: CaptureMode.TIME.value,
+                    CONF_INTERVAL: 90,
+                },
+            ],
+            CONF_OUTPUT_FPS: 30,
+            CONF_FILENAME_PATTERN: "{name}_{timestamp}.mp4",
+            CONF_KEEP_FRAMES: False,
+        },
+        title="Conditional",
+    )
+    await _setup_loaded_entry(hass, entry)
+    subentry_id = next(iter(entry.subentries))
+
+    result = await _open_reconfigure(hass, entry, subentry_id)
+    result = await _menu(hass, result, "cadence")
+    assert result["step_id"] == "conditional_rules"
+
+    # Edit the first rule's interval.
+    result = await _menu(hass, result, "rule_edit")
+    assert result["step_id"] == "rule_edit"
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {"rule_index": "0"}
+    )
+    assert result["step_id"] == "rule_conditions"
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        {
+            CONF_RULE_CONDITIONS: LAYER_BELOW_20,
+            CONF_CAPTURE_MODE: CaptureMode.TIME.value,
+        },
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {CONF_INTERVAL: 45}
+    )
+    assert result["type"] is FlowResultType.MENU
+
+    # Delete the second rule.
+    result = await _menu(hass, result, "rule_delete")
+    assert result["step_id"] == "rule_delete"
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {"rule_index": "1"}
+    )
+    assert result["type"] is FlowResultType.MENU
+
+    result = await _menu(hass, result, "cadence_done")
+    assert result["type"] is FlowResultType.MENU
+    assert result["step_id"] == "hub"
+    result = await _menu(hass, result, "save")
+    assert result["type"] is FlowResultType.ABORT
+
+    rules = entry.subentries[subentry_id].data[CONF_CONDITIONAL_RULES]
+    assert len(rules) == 2
+    assert rules[0][CONF_INTERVAL] == 45
+    assert rules[1][CONF_INTERVAL] == 90
+    assert CONF_RULE_CONDITIONS not in rules[1]
 
 
 async def test_buffer_requires_interval_for_conditional_value_rule(
@@ -692,24 +831,20 @@ async def test_buffer_requires_interval_for_conditional_value_rule(
             CONF_CAPTURE_MODE: CaptureMode.CONDITIONAL.value,
         },
     )
-    result = await hass.config_entries.subentries.async_configure(
-        result["flow_id"],
-        {
-            CONF_RULE_CONDITIONS: LAYER_BELOW_20,
-            CONF_CAPTURE_MODE: CaptureMode.TIME.value,
-            CONF_INTERVAL: 30,
-            CONF_RULE_ADD_ANOTHER: False,
-        },
+    result = await _add_conditional_rule(
+        hass, result, LAYER_BELOW_20, CaptureMode.TIME.value, {CONF_INTERVAL: 30}
     )
-    result = await hass.config_entries.subentries.async_configure(
-        result["flow_id"],
+    result = await _set_conditional_default(
+        hass,
+        result,
+        CaptureMode.VALUE_CHANGE.value,
         {
-            CONF_CAPTURE_MODE: CaptureMode.VALUE_CHANGE.value,
             CONF_VALUE_ENTITY: "sensor.current_layer",
             CONF_VALUE_DELTA: 1,
             CONF_VALUE_DIRECTION: ValueDirection.ANY.value,
         },
     )
+    result = await _menu(hass, result, "cadence_done")
     result = await hass.config_entries.subentries.async_configure(
         result["flow_id"], {CONF_WATCH_ENTITY: "sensor.printer_status"}
     )
@@ -762,18 +897,19 @@ async def test_reconfigure_conditional_to_time_strips_rules(hass):
     await _setup_loaded_entry(hass, entry)
     subentry_id = next(iter(entry.subentries))
 
-    result = await hass.config_entries.subentries.async_init(
-        (entry.entry_id, SUBENTRY_TYPE_TRIGGER),
-        context={
-            "source": config_entries.SOURCE_RECONFIGURE,
-            "subentry_id": subentry_id,
-        },
-    )
+    result = await _open_reconfigure(hass, entry, subentry_id)
+    result = await _menu(hass, result, "basics")
+    # Switching the cadence to time routes straight into the interval step.
     result = await hass.config_entries.subentries.async_configure(
         result["flow_id"],
-        dict(TRIGGER_INPUT) | {CONF_NAME: "Conditional"},
+        dict(BASICS_INPUT) | {CONF_NAME: "Conditional"},
     )
-    result = await _pass_interval_step(hass, result)
+    assert result["step_id"] == "interval"
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {CONF_INTERVAL: 30}
+    )
+    assert result["type"] is FlowResultType.MENU
+    result = await _menu(hass, result, "save")
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "reconfigure_successful"
 
@@ -970,18 +1106,15 @@ async def test_reconfigure_to_manual_strips_buffer_keys(hass):
     await _setup_loaded_entry(hass, entry)
     subentry_id = next(iter(entry.subentries))
 
-    result = await hass.config_entries.subentries.async_init(
-        (entry.entry_id, SUBENTRY_TYPE_TRIGGER),
-        context={
-            "source": config_entries.SOURCE_RECONFIGURE,
-            "subentry_id": subentry_id,
-        },
-    )
+    result = await _open_reconfigure(hass, entry, subentry_id)
+    result = await _menu(hass, result, "basics")
+    # Switching to manual clears the schedule and buffer config, back to the hub.
     result = await hass.config_entries.subentries.async_configure(
-        result["flow_id"],
-        dict(TRIGGER_INPUT) | {CONF_NAME: "Buffered"},
+        result["flow_id"], dict(BASICS_INPUT) | {CONF_NAME: "Buffered"}
     )
-    result = await _pass_interval_step(hass, result)
+    assert result["type"] is FlowResultType.MENU
+    assert result["step_id"] == "hub"
+    result = await _menu(hass, result, "save")
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "reconfigure_successful"
 
