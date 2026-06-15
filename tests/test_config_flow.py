@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from homeassistant import config_entries
+from homeassistant.config_entries import ConfigSubentryData
 from homeassistant.const import CONF_NAME
 from homeassistant.data_entry_flow import FlowResultType
+from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.auto_time_lapse.const import (
     CONF_CAMERA_ENTITY,
@@ -50,6 +52,12 @@ from custom_components.auto_time_lapse.const import (
     TriggerMode,
     ValueDirection,
     VideoQuality,
+)
+from custom_components.auto_time_lapse.schema import (
+    entry_to_yaml,
+    parse_entry_yaml,
+    parse_trigger_yaml,
+    trigger_to_yaml,
 )
 
 from .conftest import make_entry
@@ -169,9 +177,32 @@ async def _setup_loaded_entry(hass, mock_entry):
 
 
 async def _start_trigger_flow(hass, mock_entry):
-    return await hass.config_entries.subentries.async_init(
+    """Start adding a trigger and step into the guided wizard."""
+    result = await hass.config_entries.subentries.async_init(
         (mock_entry.entry_id, SUBENTRY_TYPE_TRIGGER),
         context={"source": config_entries.SOURCE_USER},
+    )
+    assert result["type"] is FlowResultType.MENU
+    assert result["step_id"] == "user"
+    return await _menu(hass, result, "guided")
+
+
+async def _start_yaml_trigger_flow(hass, mock_entry):
+    """Start adding a trigger and choose the paste-YAML path."""
+    result = await hass.config_entries.subentries.async_init(
+        (mock_entry.entry_id, SUBENTRY_TYPE_TRIGGER),
+        context={"source": config_entries.SOURCE_USER},
+    )
+    return await _menu(hass, result, "yaml_edit")
+
+
+async def _open_quality_options(hass, mock_entry):
+    """Open the camera options and step into the quality form."""
+    result = await hass.config_entries.options.async_init(mock_entry.entry_id)
+    assert result["type"] is FlowResultType.MENU
+    assert result["step_id"] == "init"
+    return await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "quality"}
     )
 
 
@@ -199,7 +230,7 @@ async def test_trigger_subentry_manual(hass, mock_entry):
     await _setup_loaded_entry(hass, mock_entry)
     result = await _start_trigger_flow(hass, mock_entry)
     assert result["type"] is FlowResultType.FORM
-    assert result["step_id"] == "user"
+    assert result["step_id"] == "guided"
 
     result = await hass.config_entries.subentries.async_configure(
         result["flow_id"], dict(TRIGGER_INPUT)
@@ -931,9 +962,9 @@ QUALITY_KEYS = (
 async def test_options_flow_preset_quality(hass, mock_entry):
     """A preset quality level saves without raw encoder keys."""
     await _setup_loaded_entry(hass, mock_entry)
-    result = await hass.config_entries.options.async_init(mock_entry.entry_id)
+    result = await _open_quality_options(hass, mock_entry)
     assert result["type"] is FlowResultType.FORM
-    assert result["step_id"] == "init"
+    assert result["step_id"] == "quality"
 
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
@@ -954,7 +985,7 @@ async def test_options_flow_preset_quality(hass, mock_entry):
 async def test_options_flow_custom_quality(hass, mock_entry):
     """The custom quality level adds a step for raw CRF and preset."""
     await _setup_loaded_entry(hass, mock_entry)
-    result = await hass.config_entries.options.async_init(mock_entry.entry_id)
+    result = await _open_quality_options(hass, mock_entry)
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
         {
@@ -981,7 +1012,7 @@ async def test_options_flow_custom_quality(hass, mock_entry):
 async def test_options_flow_requires_max_width(hass, mock_entry):
     """An enabled scale mode without a width re-shows the form."""
     await _setup_loaded_entry(hass, mock_entry)
-    result = await hass.config_entries.options.async_init(mock_entry.entry_id)
+    result = await _open_quality_options(hass, mock_entry)
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
         {
@@ -996,7 +1027,7 @@ async def test_options_flow_requires_max_width(hass, mock_entry):
 async def test_options_flow_prunes_width_when_off(hass, mock_entry):
     """A width entered with scaling off is not stored."""
     await _setup_loaded_entry(hass, mock_entry)
-    result = await hass.config_entries.options.async_init(mock_entry.entry_id)
+    result = await _open_quality_options(hass, mock_entry)
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
         {
@@ -1121,3 +1152,265 @@ async def test_reconfigure_to_manual_strips_buffer_keys(hass):
     subentry = entry.subentries[subentry_id]
     assert subentry.data[CONF_TRIGGER_MODE] == TriggerMode.MANUAL.value
     assert not any(key in subentry.data for key in BUFFER_KEYS)
+
+
+# --- YAML import/export (configuration as code) ----------------------------
+
+WATCH_TRIGGER_DATA = {
+    CONF_TRIGGER_MODE: TriggerMode.WATCH.value,
+    CONF_WATCH_ENTITY: "sensor.printer_status",
+    CONF_WATCH_STATES: ["printing", "paused"],
+    CONF_CAPTURE_MODE: CaptureMode.TIME.value,
+    CONF_INTERVAL: 30,
+    CONF_OUTPUT_FPS: 30,
+    CONF_FILENAME_PATTERN: "{name}_{timestamp}.mp4",
+    CONF_KEEP_FRAMES: False,
+}
+
+
+def _manual_data(interval: int) -> dict:
+    """Minimal valid manual time-interval trigger data."""
+    return {
+        CONF_TRIGGER_MODE: TriggerMode.MANUAL.value,
+        CONF_CAPTURE_MODE: CaptureMode.TIME.value,
+        CONF_INTERVAL: interval,
+        CONF_OUTPUT_FPS: 30,
+        CONF_FILENAME_PATTERN: "{name}_{timestamp}.mp4",
+        CONF_KEEP_FRAMES: False,
+    }
+
+
+def _make_multi_entry(triggers, options=None) -> MockConfigEntry:
+    """A camera entry with several trigger subentries (id, title, data)."""
+    return MockConfigEntry(
+        domain=DOMAIN,
+        title="Demo Camera",
+        data={CONF_CAMERA_ENTITY: "camera.demo"},
+        options=options or {},
+        entry_id="multi_entry_id",
+        version=2,
+        subentries_data=[
+            ConfigSubentryData(
+                data=data,
+                subentry_id=sid,
+                subentry_type=SUBENTRY_TYPE_TRIGGER,
+                title=title,
+                unique_id=None,
+            )
+            for sid, title, data in triggers
+        ],
+    )
+
+
+async def test_trigger_yaml_roundtrip_identity(hass):
+    """trigger_to_yaml -> parse_trigger_yaml returns the same name and data."""
+    name, data = await parse_trigger_yaml(
+        hass, trigger_to_yaml("Garden Print", dict(WATCH_TRIGGER_DATA))
+    )
+    assert name == "Garden Print"
+    assert data == WATCH_TRIGGER_DATA
+
+
+async def test_trigger_yaml_export_matches_storage(hass):
+    """Exporting a stored trigger and re-importing reproduces subentry.data."""
+    entry = make_entry(dict(WATCH_TRIGGER_DATA), title="Garden Print")
+    await _setup_loaded_entry(hass, entry)
+    subentry_id = next(iter(entry.subentries))
+
+    result = await _open_reconfigure(hass, entry, subentry_id)
+    result = await _menu(hass, result, "yaml_export")
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "yaml_export"
+
+    yaml_text = result["description_placeholders"]["yaml"]
+    name, data = await parse_trigger_yaml(hass, yaml_text)
+    assert name == "Garden Print"
+    assert data == entry.subentries[subentry_id].data
+
+
+async def test_trigger_yaml_preserves_unknown_key(hass):
+    """Export keeps keys this version doesn't recognize; import round-trips them."""
+    data = dict(WATCH_TRIGGER_DATA) | {"future_setting": "keep-me"}
+    name, parsed = await parse_trigger_yaml(hass, trigger_to_yaml("Garden", data))
+    assert name == "Garden"
+    assert parsed["future_setting"] == "keep-me"
+    assert parsed == data
+
+
+async def test_trigger_yaml_import_creates(hass, mock_entry):
+    """Pasting YAML in the new-trigger flow creates a matching trigger."""
+    await _setup_loaded_entry(hass, mock_entry)
+    result = await _start_yaml_trigger_flow(hass, mock_entry)
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "yaml_edit"
+
+    yaml_text = trigger_to_yaml("Imported", dict(WATCH_TRIGGER_DATA))
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {"yaml": yaml_text}
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    subentry = next(
+        s for s in mock_entry.subentries.values() if s.title == "Imported"
+    )
+    assert subentry.data == WATCH_TRIGGER_DATA
+
+
+async def test_trigger_yaml_edit_replaces(hass, mock_entry):
+    """Editing a trigger as YAML on the hub replaces its stored data."""
+    await _setup_loaded_entry(hass, mock_entry)
+    subentry_id = next(iter(mock_entry.subentries))
+
+    result = await _open_reconfigure(hass, mock_entry, subentry_id)
+    result = await _menu(hass, result, "yaml_edit")
+    assert result["step_id"] == "yaml_edit"
+
+    yaml_text = trigger_to_yaml("Test Lapse", dict(WATCH_TRIGGER_DATA))
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {"yaml": yaml_text}
+    )
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "reconfigure_successful"
+    assert mock_entry.subentries[subentry_id].data == WATCH_TRIGGER_DATA
+
+
+async def test_trigger_yaml_import_invalid(hass, mock_entry):
+    """Invalid YAML re-shows the form with an error and creates nothing."""
+    await _setup_loaded_entry(hass, mock_entry)
+    result = await _start_yaml_trigger_flow(hass, mock_entry)
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        {"yaml": "name: Bad\ntrigger_mode: bogus\ncapture_mode: time"},
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"base": "invalid_yaml"}
+    assert not any(s.title == "Bad" for s in mock_entry.subentries.values())
+
+
+async def test_trigger_yaml_import_invalid_condition(hass, mock_entry):
+    """A conditional rule whose conditions fail validation is rejected."""
+    await _setup_loaded_entry(hass, mock_entry)
+    result = await _start_yaml_trigger_flow(hass, mock_entry)
+    bad = (
+        "name: Bad\n"
+        "trigger_mode: manual\n"
+        "capture_mode: conditional\n"
+        "conditional_rules:\n"
+        "  - conditions:\n"
+        "      - condition: numeric_state\n"
+        "        below: 5\n"
+        "    capture_mode: time\n"
+        "    interval: 30\n"
+        "  - capture_mode: time\n"
+        "    interval: 60\n"
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {"yaml": bad}
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"base": "invalid_condition"}
+    assert not any(s.title == "Bad" for s in mock_entry.subentries.values())
+
+
+async def test_entry_yaml_export(hass):
+    """The whole-entry export contains the options and every trigger."""
+    entry = _make_multi_entry(
+        [("a", "Alpha", _manual_data(60)), ("b", "Beta", _manual_data(90))],
+        options={
+            CONF_VIDEO_QUALITY: VideoQuality.HIGH.value,
+            CONF_SCALE_MODE: ScaleMode.RENDER.value,
+            CONF_MAX_WIDTH: 1920,
+        },
+    )
+    await _setup_loaded_entry(hass, entry)
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "export_yaml"}
+    )
+    assert result["step_id"] == "export_yaml"
+
+    options, triggers = await parse_entry_yaml(
+        hass, result["description_placeholders"]["yaml"]
+    )
+    assert options == dict(entry.options)
+    assert {name for name, _ in triggers} == {"Alpha", "Beta"}
+
+
+async def test_entry_yaml_import_full_sync(hass):
+    """Whole-entry import updates, adds, and deletes triggers by name."""
+    entry = _make_multi_entry(
+        [("a", "Alpha", _manual_data(60)), ("b", "Beta", _manual_data(90))]
+    )
+    await _setup_loaded_entry(hass, entry)
+    doc = entry_to_yaml(
+        {CONF_VIDEO_QUALITY: VideoQuality.HIGH.value},
+        [("Alpha", _manual_data(120)), ("Gamma", _manual_data(15))],
+    )
+    with patch(
+        "homeassistant.config_entries.ConfigEntries.async_reload",
+        AsyncMock(return_value=True),
+    ):
+        result = await hass.config_entries.options.async_init(entry.entry_id)
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"], {"next_step_id": "import_yaml"}
+        )
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"], {"yaml": doc}
+        )
+        assert result["step_id"] == "import_confirm"
+        assert "Beta" in result["description_placeholders"]["deletions"]
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"], {}
+        )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+
+    by_title = {sub.title: sub.data for sub in entry.subentries.values()}
+    assert set(by_title) == {"Alpha", "Gamma"}
+    assert by_title["Alpha"][CONF_INTERVAL] == 120
+    assert by_title["Gamma"][CONF_INTERVAL] == 15
+    assert dict(entry.options) == {CONF_VIDEO_QUALITY: VideoQuality.HIGH.value}
+
+
+async def test_entry_yaml_import_rename_recreates(hass):
+    """Renaming a trigger deletes the old name and recreates it fresh."""
+    entry = _make_multi_entry([("a", "Alpha", _manual_data(60))])
+    await _setup_loaded_entry(hass, entry)
+    old_id = next(iter(entry.subentries))
+    doc = entry_to_yaml({}, [("Alpha Renamed", _manual_data(60))])
+    with patch(
+        "homeassistant.config_entries.ConfigEntries.async_reload",
+        AsyncMock(return_value=True),
+    ):
+        result = await hass.config_entries.options.async_init(entry.entry_id)
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"], {"next_step_id": "import_yaml"}
+        )
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"], {"yaml": doc}
+        )
+        assert "Alpha" in result["description_placeholders"]["deletions"]
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"], {}
+        )
+    titles = {sub.title for sub in entry.subentries.values()}
+    assert titles == {"Alpha Renamed"}
+    assert old_id not in entry.subentries
+
+
+async def test_entry_yaml_import_rejects_duplicate_names(hass):
+    """Two triggers with the same name abort the import with an error."""
+    entry = _make_multi_entry([("a", "Alpha", _manual_data(60))])
+    await _setup_loaded_entry(hass, entry)
+    doc = entry_to_yaml(
+        {}, [("Dup", _manual_data(60)), ("Dup", _manual_data(90))]
+    )
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "import_yaml"}
+    )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"yaml": doc}
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"base": "duplicate_names"}
+    # The existing trigger is untouched.
+    assert {sub.title for sub in entry.subentries.values()} == {"Alpha"}

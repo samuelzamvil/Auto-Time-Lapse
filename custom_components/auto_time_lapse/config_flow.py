@@ -10,6 +10,7 @@ from homeassistant.config_entries import (
     ConfigEntry,
     ConfigFlow,
     ConfigFlowResult,
+    ConfigSubentry,
     ConfigSubentryFlow,
     OptionsFlow,
     SubentryFlowResult,
@@ -31,6 +32,8 @@ from homeassistant.helpers.selector import (
     StateSelector,
     StateSelectorConfig,
     TextSelector,
+    TextSelectorConfig,
+    TextSelectorType,
     TimeSelector,
 )
 import voluptuous as vol
@@ -97,6 +100,18 @@ from .const import (
     TriggerMode,
     ValueDirection,
     VideoQuality,
+)
+from .schema import (
+    DuplicateTriggerNames,
+    InvalidConditionError,
+    build_rule,
+    entry_to_yaml,
+    parse_entry_yaml,
+    parse_trigger_yaml,
+    prune_options,
+    prune_trigger_data,
+    trigger_to_yaml,
+    validate_rule,
 )
 
 
@@ -267,6 +282,17 @@ def _trigger_schema() -> vol.Schema:
     return vol.Schema({**_basics_fields(), **_output_fields()})
 
 
+def _yaml_schema() -> vol.Schema:
+    """A single multiline text field for pasting/showing YAML."""
+    return vol.Schema(
+        {
+            vol.Required("yaml"): TextSelector(
+                TextSelectorConfig(multiline=True, type=TextSelectorType.TEXT)
+            )
+        }
+    )
+
+
 def _validate_output_dir(
     hass: HomeAssistant, user_input: dict[str, Any]
 ) -> dict[str, str]:
@@ -391,55 +417,6 @@ def _rule_cadence_schema(mode: str) -> vol.Schema:
     return vol.Schema(builder())
 
 
-def _validate_rule(user_input: dict[str, Any]) -> dict[str, str]:
-    """Validate the cadence settings of one conditional rule.
-
-    The required entity fields are enforced by the cadence schema; only the
-    value ranges need a custom check.
-    """
-    errors: dict[str, str] = {}
-    if user_input[CONF_CAPTURE_MODE] == CaptureMode.VALUE_CHANGE:
-        if float(user_input.get(CONF_VALUE_DELTA, DEFAULT_VALUE_DELTA)) <= 0:
-            errors[CONF_VALUE_DELTA] = "delta_positive"
-    elif user_input[CONF_CAPTURE_MODE] == CaptureMode.TIME_FIT:
-        if float(user_input.get(CONF_TARGET_LENGTH, DEFAULT_TARGET_LENGTH)) <= 0:
-            errors[CONF_TARGET_LENGTH] = "length_positive"
-    return errors
-
-
-def _build_rule(
-    user_input: dict[str, Any], *, conditions: list | None
-) -> dict[str, Any]:
-    """Assemble a stored rule dict, keeping only the chosen cadence's keys."""
-    rule: dict[str, Any] = {}
-    if conditions:
-        rule[CONF_RULE_CONDITIONS] = conditions
-    mode = user_input[CONF_CAPTURE_MODE]
-    rule[CONF_CAPTURE_MODE] = mode
-    if mode == CaptureMode.VALUE_CHANGE:
-        rule[CONF_VALUE_ENTITY] = user_input[CONF_VALUE_ENTITY]
-        rule[CONF_VALUE_DELTA] = float(
-            user_input.get(CONF_VALUE_DELTA, DEFAULT_VALUE_DELTA)
-        )
-        rule[CONF_VALUE_DIRECTION] = user_input.get(
-            CONF_VALUE_DIRECTION, ValueDirection.ANY.value
-        )
-    elif mode == CaptureMode.TIME_FIT:
-        rule[CONF_DURATION_ENTITY] = user_input[CONF_DURATION_ENTITY]
-        rule[CONF_DURATION_TYPE] = user_input.get(
-            CONF_DURATION_TYPE, DurationType.SECONDS.value
-        )
-        rule[CONF_TARGET_LENGTH] = float(
-            user_input.get(CONF_TARGET_LENGTH, DEFAULT_TARGET_LENGTH)
-        )
-        rule[CONF_FALLBACK_INTERVAL] = int(
-            user_input.get(CONF_FALLBACK_INTERVAL, DEFAULT_FALLBACK_INTERVAL)
-        )
-    else:
-        rule[CONF_INTERVAL] = int(user_input.get(CONF_INTERVAL, DEFAULT_INTERVAL))
-    return rule
-
-
 # Picker key for the "which rule" select steps; never persisted.
 CONF_RULE_INDEX = "rule_index"
 
@@ -542,8 +519,21 @@ class AutoTimeLapseOptionsFlow(OptionsFlow):
 
     def __init__(self) -> None:
         self._data: dict[str, Any] = {}
+        # Parsed whole-entry import held between the paste and confirm steps.
+        self._import_options: dict[str, Any] = {}
+        self._import_triggers: list[tuple[str, dict[str, Any]]] = []
+        self._import_deletions: list[str] = []
 
     async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Choose between editing quality defaults and the YAML code view."""
+        return self.async_show_menu(
+            step_id="init",
+            menu_options=["quality", "export_yaml", "import_yaml"],
+        )
+
+    async def async_step_quality(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Pick the quality level and image scaling."""
@@ -559,7 +549,7 @@ class AutoTimeLapseOptionsFlow(OptionsFlow):
             user_input if user_input is not None else dict(self.config_entry.options)
         )
         return self.async_show_form(
-            step_id="init",
+            step_id="quality",
             data_schema=self.add_suggested_values_to_schema(
                 vol.Schema(_quality_fields(with_inherit=False)), suggested or None
             ),
@@ -580,15 +570,125 @@ class AutoTimeLapseOptionsFlow(OptionsFlow):
             ),
         )
 
+    def _trigger_subentries(self) -> list[ConfigSubentry]:
+        return [
+            sub
+            for sub in self.config_entry.subentries.values()
+            if sub.subentry_type == SUBENTRY_TYPE_TRIGGER
+        ]
+
+    async def async_step_export_yaml(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Show the whole camera entry (options + triggers) as YAML."""
+        if user_input is not None:
+            return await self.async_step_init()
+        yaml_text = entry_to_yaml(
+            dict(self.config_entry.options),
+            [(sub.title, dict(sub.data)) for sub in self._trigger_subentries()],
+        )
+        return self.async_show_form(
+            step_id="export_yaml",
+            data_schema=self.add_suggested_values_to_schema(
+                _yaml_schema(), {"yaml": yaml_text}
+            ),
+            description_placeholders={"yaml": yaml_text},
+        )
+
+    async def async_step_import_yaml(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Paste a whole-entry YAML document to replace the camera config."""
+        errors: dict[str, str] = {}
+        placeholders: dict[str, str] = {}
+        if user_input is not None:
+            try:
+                options, triggers = await parse_entry_yaml(
+                    self.hass, user_input.get("yaml", "")
+                )
+            except DuplicateTriggerNames as err:
+                errors["base"] = "duplicate_names"
+                placeholders["error"] = ", ".join(err.names)
+            except InvalidConditionError as err:
+                errors["base"] = "invalid_condition"
+                placeholders["error"] = str(err)
+            except vol.Invalid as err:
+                errors["base"] = "invalid_yaml"
+                placeholders["error"] = str(err)
+            else:
+                self._import_options = options
+                self._import_triggers = triggers
+                incoming = {name for name, _ in triggers}
+                self._import_deletions = sorted(
+                    sub.title
+                    for sub in self._trigger_subentries()
+                    if sub.title not in incoming
+                )
+                return await self.async_step_import_confirm()
+        return self.async_show_form(
+            step_id="import_yaml",
+            data_schema=_yaml_schema(),
+            errors=errors,
+            description_placeholders=placeholders,
+        )
+
+    async def async_step_import_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Confirm the full sync, listing triggers that will be deleted."""
+        if user_input is not None:
+            self._apply_import()
+            return self._finish_with(self._import_options)
+        deletions = (
+            "\n".join(f"- {name}" for name in self._import_deletions)
+            if self._import_deletions
+            else "(none)"
+        )
+        return self.async_show_form(
+            step_id="import_confirm",
+            data_schema=vol.Schema({}),
+            description_placeholders={
+                "deletions": deletions,
+                "kept": "\n".join(
+                    f"- {name}" for name, _ in self._import_triggers
+                )
+                or "(none)",
+            },
+        )
+
+    @callback
+    def _apply_import(self) -> None:
+        """Full sync: upsert incoming triggers (by name) and delete the rest."""
+        existing = {sub.title: sub for sub in self._trigger_subentries()}
+        incoming = {name for name, _ in self._import_triggers}
+        for name, data in self._import_triggers:
+            if (sub := existing.get(name)) is not None:
+                self.hass.config_entries.async_update_subentry(
+                    self.config_entry, sub, data=data, title=name
+                )
+            else:
+                self.hass.config_entries.async_add_subentry(
+                    self.config_entry,
+                    ConfigSubentry(
+                        data=data,
+                        subentry_type=SUBENTRY_TYPE_TRIGGER,
+                        title=name,
+                        unique_id=None,
+                    ),
+                )
+        for title, sub in existing.items():
+            if title not in incoming:
+                self.hass.config_entries.async_remove_subentry(
+                    self.config_entry, sub.subentry_id
+                )
+
     @callback
     def _finish(self) -> ConfigFlowResult:
-        data = dict(self._data)
-        if data.get(CONF_VIDEO_QUALITY) != VideoQuality.CUSTOM:
-            data.pop(CONF_VIDEO_CRF, None)
-            data.pop(CONF_VIDEO_PRESET, None)
-        if data.get(CONF_SCALE_MODE) == ScaleMode.OFF:
-            data.pop(CONF_MAX_WIDTH, None)
-        return self.async_create_entry(title="", data=data)
+        return self._finish_with(self._data)
+
+    @callback
+    def _finish_with(self, data: dict[str, Any]) -> ConfigFlowResult:
+        return self.async_create_entry(title="", data=prune_options(data))
 
 
 class TriggerSubentryFlow(ConfigSubentryFlow):
@@ -619,8 +719,16 @@ class TriggerSubentryFlow(ConfigSubentryFlow):
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> SubentryFlowResult:
-        """Add a new trigger."""
-        return await self._async_step_main(user_input, "user")
+        """Add a new trigger: guided wizard or pasted YAML."""
+        return self.async_show_menu(
+            step_id="user", menu_options=["guided", "yaml_edit"]
+        )
+
+    async def async_step_guided(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Walk through the guided trigger wizard."""
+        return await self._async_step_main(user_input, "guided")
 
     async def async_step_reconfigure(
         self, user_input: dict[str, Any] | None = None
@@ -722,6 +830,8 @@ class TriggerSubentryFlow(ConfigSubentryFlow):
         if mode != TriggerMode.MANUAL:
             menu_options.append("end_buffer")
         menu_options.append("output")
+        menu_options.append("yaml_export")
+        menu_options.append("yaml_edit")
         menu_options.append("save")
         return self.async_show_menu(step_id="hub", menu_options=menu_options)
 
@@ -781,6 +891,63 @@ class TriggerSubentryFlow(ConfigSubentryFlow):
         if (missing := self._missing_step()) is not None:
             return await missing()
         return self._finish()
+
+    # --- YAML code view: export the trigger / create or replace from YAML ---
+
+    def _current_trigger_yaml(self) -> str:
+        """Render the working trigger as YAML (title + pruned data)."""
+        data = dict(self._data)
+        title = data.pop(CONF_NAME, "")
+        return trigger_to_yaml(title, prune_trigger_data(data))
+
+    async def async_step_yaml_export(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Show the current trigger as YAML; submitting returns to the hub."""
+        if user_input is not None:
+            return await self.async_step_hub()
+        yaml_text = self._current_trigger_yaml()
+        return self.async_show_form(
+            step_id="yaml_export",
+            data_schema=self.add_suggested_values_to_schema(
+                _yaml_schema(), {"yaml": yaml_text}
+            ),
+            description_placeholders={"yaml": yaml_text},
+        )
+
+    async def async_step_yaml_edit(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Create (new flow) or replace (reconfigure) the trigger from YAML."""
+        errors: dict[str, str] = {}
+        placeholders: dict[str, str] = {}
+        suggested: dict[str, Any] | None = None
+        if user_input is not None:
+            try:
+                name, data = await parse_trigger_yaml(
+                    self.hass, user_input.get("yaml", "")
+                )
+            except InvalidConditionError as err:
+                errors["base"] = "invalid_condition"
+                placeholders["error"] = str(err)
+                suggested = user_input
+            except vol.Invalid as err:
+                errors["base"] = "invalid_yaml"
+                placeholders["error"] = str(err)
+                suggested = user_input
+            else:
+                self._data = {CONF_NAME: name, **data}
+                return self._finish()
+        elif self._editing:
+            suggested = {"yaml": self._current_trigger_yaml()}
+        return self.async_show_form(
+            step_id="yaml_edit",
+            data_schema=self.add_suggested_values_to_schema(
+                _yaml_schema(), suggested
+            ),
+            errors=errors,
+            description_placeholders=placeholders,
+        )
 
     def _reset_cadence(self) -> None:
         """Drop every cadence-specific key and reset the rule working copy."""
@@ -1056,14 +1223,14 @@ class TriggerSubentryFlow(ConfigSubentryFlow):
         errors: dict[str, str] = {}
         if user_input is not None:
             merged = {**self._rule_draft, **user_input}
-            errors = _validate_rule(merged)
+            errors = validate_rule(merged)
             if not errors:
                 conditions = (
                     None
                     if self._rule_is_default
                     else self._rule_draft.get(CONF_RULE_CONDITIONS)
                 )
-                rule = _build_rule(merged, conditions=conditions)
+                rule = build_rule(merged, conditions=conditions)
                 if self._rule_is_default:
                     self._default_rule = rule
                 elif self._rule_index is None:
@@ -1245,61 +1412,7 @@ class TriggerSubentryFlow(ConfigSubentryFlow):
     def _finish(self) -> SubentryFlowResult:
         data = dict(self._data)
         title = data.pop(CONF_NAME)
-        mode = data[CONF_TRIGGER_MODE]
-        if mode != TriggerMode.SCHEDULE:
-            data.pop(CONF_SCHEDULE_START, None)
-            data.pop(CONF_SCHEDULE_END, None)
-        if mode != TriggerMode.WATCH:
-            data.pop(CONF_WATCH_ENTITY, None)
-            data.pop(CONF_WATCH_STATES, None)
-        buffer_mode = data.get(CONF_END_BUFFER_MODE)
-        if mode == TriggerMode.MANUAL or buffer_mode in (None, EndBufferMode.OFF):
-            data.pop(CONF_END_BUFFER_MODE, None)
-            data.pop(CONF_END_BUFFER_AMOUNT, None)
-            data.pop(CONF_END_BUFFER_INTERVAL, None)
-            data.pop(CONF_END_BUFFER_RETRIGGER, None)
-        cadence = data[CONF_CAPTURE_MODE]
-        if cadence != CaptureMode.TIME:
-            data.pop(CONF_INTERVAL, None)
-        if cadence != CaptureMode.TIME_FIT:
-            data.pop(CONF_DURATION_ENTITY, None)
-            data.pop(CONF_DURATION_TYPE, None)
-            data.pop(CONF_TARGET_LENGTH, None)
-            data.pop(CONF_FALLBACK_INTERVAL, None)
-        if cadence != CaptureMode.VALUE_CHANGE:
-            data.pop(CONF_VALUE_ENTITY, None)
-            data.pop(CONF_VALUE_DELTA, None)
-            data.pop(CONF_VALUE_DIRECTION, None)
-        if cadence != CaptureMode.CONDITIONAL:
-            data.pop(CONF_CONDITIONAL_RULES, None)
-        if data.get(CONF_VIDEO_QUALITY) in (None, OPTION_SERVICE_DEFAULT):
-            data.pop(CONF_VIDEO_QUALITY, None)
-        if data.get(CONF_VIDEO_QUALITY) != VideoQuality.CUSTOM:
-            data.pop(CONF_VIDEO_CRF, None)
-            data.pop(CONF_VIDEO_PRESET, None)
-        scale_mode = data.get(CONF_SCALE_MODE)
-        if scale_mode in (None, OPTION_SERVICE_DEFAULT):
-            data.pop(CONF_SCALE_MODE, None)
-            data.pop(CONF_MAX_WIDTH, None)
-        elif scale_mode == ScaleMode.OFF:
-            # An explicit off override of a service-level capture/render
-            # setting must survive, unlike the inherit sentinel.
-            data.pop(CONF_MAX_WIDTH, None)
-        if not data.get(CONF_KEEP_FRAMES):
-            data.pop(CONF_AUTO_PURGE, None)
-            data.pop(CONF_PURGE_MODE, None)
-            data.pop(CONF_PURGE_KEEP_SESSIONS, None)
-            data.pop(CONF_PURGE_MAX_AGE_DAYS, None)
-        elif not data.get(CONF_AUTO_PURGE):
-            data.pop(CONF_PURGE_MODE, None)
-            data.pop(CONF_PURGE_KEEP_SESSIONS, None)
-            data.pop(CONF_PURGE_MAX_AGE_DAYS, None)
-        else:
-            purge_mode = data.get(CONF_PURGE_MODE)
-            if purge_mode == PurgeMode.KEEP_RECENT:
-                data.pop(CONF_PURGE_MAX_AGE_DAYS, None)
-            elif purge_mode == PurgeMode.MAX_AGE:
-                data.pop(CONF_PURGE_KEEP_SESSIONS, None)
+        data = prune_trigger_data(data)
         if self._is_new:
             return self.async_create_entry(title=title, data=data)
         return self.async_update_and_abort(
