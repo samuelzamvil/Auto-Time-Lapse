@@ -89,15 +89,40 @@
             "max_width": "Frames or video wider than this are scaled down, keeping the aspect ratio. Only applies when this trigger also sets its own image scaling mode."
           }
         },
-        "reconfigure": {
-          "title": "Reconfigure trigger",
+        "hub": {
+          "title": "Edit trigger",
+          "description": "Pick a section to change. Jump straight to what you need — you don't have to step through everything. Choose “Save changes” when you're done.",
+          "menu_options": {
+            "basics": "Basics (name, mode, cadence, output)",
+            "cadence": "Capture cadence settings",
+            "schedule": "Daily time window",
+            "watch": "Watched entity and states",
+            "end_buffer": "End delay buffer",
+            "output": "Retention and quality",
+            "save": "Save changes"
+          }
+        },
+        "basics": {
+          "title": "Basics",
           "data": {
             "name": "Name",
             "trigger_mode": "Trigger mode",
             "capture_mode": "Capture cadence",
             "output_fps": "Video frame rate (FPS)",
             "output_dir": "Output directory",
-            "filename_pattern": "Filename pattern",
+            "filename_pattern": "Filename pattern"
+          },
+          "data_description": {
+            "name": "Used for the device name and as the name placeholder in filenames.",
+            "trigger_mode": "Manual: start and stop with the switch or services. Daily time window: capture between two times every day. Entity state watch: capture while another entity is in chosen states. Changing this opens the matching setup step.",
+            "capture_mode": "Time interval: a snapshot every N seconds. Fit target video length: the interval is computed from a duration entity so the video always comes out about a chosen length. Entity value change: a snapshot each time a numeric entity moves by a chosen step, for example one frame per 3D-printer layer. Conditional: rules with Home Assistant conditions decide which cadence applies. Changing this opens the matching cadence step.",
+            "output_dir": "Folder for finished videos, created automatically if it does not exist (for example /media/timelapses). Leave empty for the default media folder. Anything under /media shows up in the Media Browser, including NAS shares added via Settings > System > Storage. Paths outside a media folder must be listed in allowlist_external_dirs.",
+            "filename_pattern": "Pattern for the video filename. Wrap the placeholders name, timestamp or entry_id in curly braces to insert them, as in the default value."
+          }
+        },
+        "output": {
+          "title": "Retention and quality",
+          "data": {
             "keep_frames": "Keep frames after rendering",
             "auto_purge": "Auto-purge old frames",
             "purge_mode": "Retention mode",
@@ -108,11 +133,6 @@
             "max_width": "Maximum width"
           },
           "data_description": {
-            "name": "Used for the device name and as the name placeholder in filenames.",
-            "trigger_mode": "Manual: start and stop with the switch or services. Daily time window: capture between two times every day. Entity state watch: capture while another entity is in chosen states.",
-            "capture_mode": "Time interval: a snapshot every N seconds. Fit target video length: the interval is computed from a duration entity so the video always comes out about a chosen length. Entity value change: a snapshot each time a numeric entity moves by a chosen step, for example one frame per 3D-printer layer. Conditional: rules with Home Assistant conditions decide which cadence applies, with a default for when no rule matches.",
-            "output_dir": "Folder for finished videos, created automatically if it does not exist (for example /media/timelapses). Leave empty for the default media folder. Anything under /media shows up in the Media Browser, including NAS shares added via Settings > System > Storage. Paths outside a media folder must be listed in allowlist_external_dirs.",
-            "filename_pattern": "Pattern for the video filename. Wrap the placeholders name, timestamp or entry_id in curly braces to insert them, as in the default value.",
             "keep_frames": "Keep the individual snapshot frames on disk after the video is rendered.",
             "auto_purge": "Automatically delete old frame sets after each render and once a day. Only applies when Keep frames is on. Videos are never deleted.",
             "purge_mode": "Keep the N most recent sessions' frames, or delete frames older than N days.",
@@ -204,58 +224,61 @@
             "value_direction": "Which way the value must move to capture. With increase or decrease, movement the other way re-baselines silently (a layer counter resetting for a new print just starts counting again)."
           }
         },
-        "conditional_rule": {
-          "title": "Cadence rule {rule_number}",
-          "description": "Rules are checked top to bottom; the first one whose conditions hold paces the frames. Fill in only the settings for the chosen cadence.",
+        "conditional_rules": {
+          "title": "Conditional cadence",
+          "description": "Rules are checked top to bottom; the first whose conditions all hold paces the frames for the whole session. The default is used when no rule matches.\n\n{rules_summary}",
+          "menu_options": {
+            "rule_add": "Add a rule",
+            "rule_edit": "Edit a rule",
+            "rule_delete": "Delete a rule",
+            "rule_default": "Set the default cadence",
+            "cadence_done": "Done"
+          }
+        },
+        "rule_edit": {
+          "title": "Edit which rule",
+          "data": {
+            "rule_index": "Rule"
+          }
+        },
+        "rule_delete": {
+          "title": "Delete which rule",
+          "data": {
+            "rule_index": "Rule"
+          }
+        },
+        "rule_conditions": {
+          "title": "Conditions and cadence",
+          "description": "Editing {rule_label}. Choose the conditions that select this rule and which cadence paces frames while they hold. The cadence's own settings come next.",
           "data": {
             "conditions": "Conditions",
-            "capture_mode": "Cadence while these conditions hold",
-            "interval": "Capture interval (time interval cadence)",
-            "duration_entity": "Duration entity (fit target length cadence)",
-            "duration_type": "Duration entity reports (fit target length cadence)",
-            "target_length": "Target video length (fit target length cadence)",
-            "fallback_interval": "Fallback interval (fit target length cadence)",
-            "value_entity": "Value entity (value change cadence)",
-            "value_delta": "Capture every (value change cadence)",
-            "value_direction": "Direction (value change cadence)",
-            "add_another": "Add another rule"
+            "capture_mode": "Cadence while these conditions hold"
           },
           "data_description": {
             "conditions": "Home Assistant conditions that must all hold for this rule to apply, for example a numeric state condition on a layer count sensor.",
-            "capture_mode": "Time interval: a snapshot every N seconds. Fit target video length: auto-compute the interval from a duration entity. Entity value change: a snapshot each time a numeric entity moves by a chosen step.",
+            "capture_mode": "Time interval: a snapshot every N seconds. Fit target video length: auto-compute the interval from a duration entity. Entity value change: a snapshot each time a numeric entity moves by a chosen step."
+          }
+        },
+        "rule_cadence": {
+          "title": "Cadence settings",
+          "description": "Cadence settings for {rule_label}.",
+          "data": {
+            "interval": "Capture interval",
+            "duration_entity": "Duration entity",
+            "duration_type": "Duration entity reports",
+            "target_length": "Target video length",
+            "fallback_interval": "Fallback interval",
+            "value_entity": "Value entity",
+            "value_delta": "Capture every",
+            "value_direction": "Direction"
+          },
+          "data_description": {
             "interval": "Seconds between snapshots while this rule applies.",
             "duration_entity": "Entity that reports the expected total duration of the session while this rule applies, for example a 3D printer's estimated print time sensor.",
             "duration_type": "How to read the duration entity: as a number of seconds, minutes, or hours, or as an end-time timestamp.",
             "target_length": "Desired length of the finished video. The capture interval is computed once when the session starts.",
             "fallback_interval": "Seconds between snapshots when the duration entity cannot be read as a positive number at session start.",
             "value_entity": "Numeric entity that paces the frames while this rule applies.",
-            "value_delta": "A frame is captured each time the value moves by at least this amount since the last frame. Use 1 for one frame per layer.",
-            "value_direction": "Which way the value must move to capture.",
-            "add_another": "Add one more rule after this one. The default cadence for when no rule matches is configured last either way."
-          }
-        },
-        "conditional_default": {
-          "title": "Default cadence",
-          "description": "Used whenever no rule's conditions hold. Fill in only the settings for the chosen cadence.",
-          "data": {
-            "capture_mode": "Default cadence",
-            "interval": "Capture interval (time interval cadence)",
-            "duration_entity": "Duration entity (fit target length cadence)",
-            "duration_type": "Duration entity reports (fit target length cadence)",
-            "target_length": "Target video length (fit target length cadence)",
-            "fallback_interval": "Fallback interval (fit target length cadence)",
-            "value_entity": "Value entity (value change cadence)",
-            "value_delta": "Capture every (value change cadence)",
-            "value_direction": "Direction (value change cadence)"
-          },
-          "data_description": {
-            "capture_mode": "Time interval: a snapshot every N seconds. Fit target video length: auto-compute the interval from a duration entity. Entity value change: a snapshot each time a numeric entity moves by a chosen step.",
-            "interval": "Seconds between snapshots while no rule applies.",
-            "duration_entity": "Entity that reports the expected total duration of the session while the default applies, for example a 3D printer's estimated print time sensor.",
-            "duration_type": "How to read the duration entity: as a number of seconds, minutes, or hours, or as an end-time timestamp.",
-            "target_length": "Desired length of the finished video. The capture interval is computed once when the session starts.",
-            "fallback_interval": "Seconds between snapshots when the duration entity cannot be read as a positive number at session start.",
-            "value_entity": "Numeric entity that paces the frames while no rule applies.",
             "value_delta": "A frame is captured each time the value moves by at least this amount since the last frame. Use 1 for one frame per layer.",
             "value_direction": "Which way the value must move to capture."
           }
