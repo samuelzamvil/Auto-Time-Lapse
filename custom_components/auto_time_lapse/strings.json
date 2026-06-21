@@ -18,6 +18,15 @@
   "options": {
     "step": {
       "init": {
+        "title": "Camera configuration",
+        "description": "Edit the quality defaults, or view and replace this camera's whole configuration as YAML.",
+        "menu_options": {
+          "quality": "Video and image quality defaults",
+          "export_yaml": "Export this camera as YAML",
+          "import_yaml": "Import this camera from YAML"
+        }
+      },
+      "quality": {
         "title": "Video and image quality",
         "description": "Defaults for every trigger on this camera. Individual triggers can override any of these.",
         "data": {
@@ -41,10 +50,31 @@
           "video_crf": "x264 constant rate factor: lower is higher quality and a bigger file. 0 is lossless, 23 is the default, 51 is worst.",
           "video_preset": "Encoding speed versus compression efficiency. Slower presets produce smaller files at the same quality but render longer."
         }
+      },
+      "export_yaml": {
+        "title": "Export camera as YAML",
+        "description": "The whole camera configuration — its quality defaults and every trigger — as YAML. Copy it to back up, share, or edit and paste back via Import.\n\n{yaml}",
+        "data": {
+          "yaml": "YAML"
+        }
+      },
+      "import_yaml": {
+        "title": "Import camera from YAML",
+        "description": "Paste a whole-camera YAML document (an 'options' mapping and a 'triggers' list, as produced by Export). This fully replaces the camera's triggers: triggers are matched by name, and any existing trigger not in the document is deleted. You confirm the deletions on the next step.\n\nRenaming a trigger deletes the old name and recreates it under the new one. Trigger names must be unique within the document.",
+        "data": {
+          "yaml": "YAML"
+        }
+      },
+      "import_confirm": {
+        "title": "Confirm import",
+        "description": "Applying this import will create or update these triggers:\n{kept}\n\nAnd delete these triggers (not present in the document):\n{deletions}\n\nSubmit to apply, or go back to change the YAML."
       }
     },
     "error": {
-      "max_width_required": "Enter a maximum width to enable image scaling."
+      "max_width_required": "Enter a maximum width to enable image scaling.",
+      "invalid_yaml": "Could not import this YAML: {error}",
+      "invalid_condition": "A conditional rule has invalid conditions: {error}",
+      "duplicate_names": "Trigger names must be unique. Duplicated: {error}"
     }
   },
   "config_subentries": {
@@ -57,6 +87,14 @@
       "step": {
         "user": {
           "title": "Add trigger",
+          "description": "Build the trigger step by step, or paste a YAML definition.",
+          "menu_options": {
+            "guided": "Guided setup",
+            "yaml_edit": "Paste YAML"
+          }
+        },
+        "guided": {
+          "title": "Add trigger",
           "data": {
             "name": "Name",
             "trigger_mode": "Trigger mode",
@@ -65,6 +103,10 @@
             "output_dir": "Output directory",
             "filename_pattern": "Filename pattern",
             "keep_frames": "Keep frames after rendering",
+            "auto_purge": "Auto-purge old frames",
+            "purge_mode": "Retention mode",
+            "purge_keep_sessions": "Sessions to keep",
+            "purge_max_age_days": "Delete frames older than",
             "video_quality": "Video quality",
             "scale_mode": "Image scaling",
             "max_width": "Maximum width"
@@ -76,32 +118,66 @@
             "output_dir": "Folder for finished videos, created automatically if it does not exist (for example /media/timelapses). Leave empty for the default media folder. Anything under /media shows up in the Media Browser, including NAS shares added via Settings > System > Storage. Paths outside a media folder must be listed in allowlist_external_dirs.",
             "filename_pattern": "Pattern for the video filename. Wrap the placeholders name, timestamp or entry_id in curly braces to insert them, as in the default value.",
             "keep_frames": "Keep the individual snapshot frames on disk after the video is rendered.",
+            "auto_purge": "Automatically delete old frame sets after each render and once a day. Only applies when Keep frames is on. Videos are never deleted.",
+            "purge_mode": "Keep the N most recent sessions' frames, or delete frames older than N days.",
+            "purge_keep_sessions": "Number of most-recent sessions whose frames are kept. Older sessions' frames are deleted.",
+            "purge_max_age_days": "Frames in sessions older than this many days are deleted.",
             "video_quality": "Use service default keeps the camera entry's setting. Higher quality means larger files and a slower render. Custom opens a step to set the raw x264 CRF and preset.",
             "scale_mode": "Use service default keeps the camera entry's setting. Off: frames and video keep the camera's native resolution. During capture: Home Assistant scales every snapshot the moment it is taken — this decodes and re-encodes each JPEG, costing CPU on every single frame for the whole session, but stores smaller frames on disk. During render: frames are stored at full size and ffmpeg downscales once while rendering the video (recommended unless frame disk usage matters).",
             "max_width": "Frames or video wider than this are scaled down, keeping the aspect ratio. Only applies when this trigger also sets its own image scaling mode."
           }
         },
-        "reconfigure": {
-          "title": "Reconfigure trigger",
+        "hub": {
+          "title": "Edit trigger",
+          "description": "Pick a section to change. Jump straight to what you need — you don't have to step through everything. Choose “Save changes” when you're done.",
+          "menu_options": {
+            "basics": "Basics (name, mode, cadence, output)",
+            "cadence": "Capture cadence settings",
+            "schedule": "Daily time window",
+            "watch": "Watched entity and states",
+            "end_buffer": "End delay buffer",
+            "output": "Retention and quality",
+            "yaml_export": "View as YAML",
+            "yaml_edit": "Edit as YAML",
+            "save": "Save changes"
+          }
+        },
+        "basics": {
+          "title": "Basics",
           "data": {
             "name": "Name",
             "trigger_mode": "Trigger mode",
             "capture_mode": "Capture cadence",
             "output_fps": "Video frame rate (FPS)",
             "output_dir": "Output directory",
-            "filename_pattern": "Filename pattern",
+            "filename_pattern": "Filename pattern"
+          },
+          "data_description": {
+            "name": "Used for the device name and as the name placeholder in filenames.",
+            "trigger_mode": "Manual: start and stop with the switch or services. Daily time window: capture between two times every day. Entity state watch: capture while another entity is in chosen states. Changing this opens the matching setup step.",
+            "capture_mode": "Time interval: a snapshot every N seconds. Fit target video length: the interval is computed from a duration entity so the video always comes out about a chosen length. Entity value change: a snapshot each time a numeric entity moves by a chosen step, for example one frame per 3D-printer layer. Conditional: rules with Home Assistant conditions decide which cadence applies. Changing this opens the matching cadence step.",
+            "output_dir": "Folder for finished videos, created automatically if it does not exist (for example /media/timelapses). Leave empty for the default media folder. Anything under /media shows up in the Media Browser, including NAS shares added via Settings > System > Storage. Paths outside a media folder must be listed in allowlist_external_dirs.",
+            "filename_pattern": "Pattern for the video filename. Wrap the placeholders name, timestamp or entry_id in curly braces to insert them, as in the default value."
+          }
+        },
+        "output": {
+          "title": "Retention and quality",
+          "data": {
             "keep_frames": "Keep frames after rendering",
+            "auto_purge": "Auto-purge old frames",
+            "purge_mode": "Retention mode",
+            "purge_keep_sessions": "Sessions to keep",
+            "purge_max_age_days": "Delete frames older than",
             "video_quality": "Video quality",
             "scale_mode": "Image scaling",
             "max_width": "Maximum width"
           },
           "data_description": {
-            "name": "Used for the device name and as the name placeholder in filenames.",
-            "trigger_mode": "Manual: start and stop with the switch or services. Daily time window: capture between two times every day. Entity state watch: capture while another entity is in chosen states.",
-            "capture_mode": "Time interval: a snapshot every N seconds. Fit target video length: the interval is computed from a duration entity so the video always comes out about a chosen length. Entity value change: a snapshot each time a numeric entity moves by a chosen step, for example one frame per 3D-printer layer. Conditional: rules with Home Assistant conditions decide which cadence applies, with a default for when no rule matches.",
-            "output_dir": "Folder for finished videos, created automatically if it does not exist (for example /media/timelapses). Leave empty for the default media folder. Anything under /media shows up in the Media Browser, including NAS shares added via Settings > System > Storage. Paths outside a media folder must be listed in allowlist_external_dirs.",
-            "filename_pattern": "Pattern for the video filename. Wrap the placeholders name, timestamp or entry_id in curly braces to insert them, as in the default value.",
             "keep_frames": "Keep the individual snapshot frames on disk after the video is rendered.",
+            "auto_purge": "Automatically delete old frame sets after each render and once a day. Only applies when Keep frames is on. Videos are never deleted.",
+            "purge_mode": "Keep the N most recent sessions' frames, or delete frames older than N days.",
+            "purge_keep_sessions": "Number of most-recent sessions whose frames are kept. Older sessions' frames are deleted.",
+            "purge_max_age_days": "Frames in sessions older than this many days are deleted.",
             "video_quality": "Use service default keeps the camera entry's setting. Higher quality means larger files and a slower render. Custom opens a step to set the raw x264 CRF and preset.",
             "scale_mode": "Use service default keeps the camera entry's setting. Off: frames and video keep the camera's native resolution. During capture: Home Assistant scales every snapshot the moment it is taken — this decodes and re-encodes each JPEG, costing CPU on every single frame for the whole session, but stores smaller frames on disk. During render: frames are stored at full size and ffmpeg downscales once while rendering the video (recommended unless frame disk usage matters).",
             "max_width": "Frames or video wider than this are scaled down, keeping the aspect ratio. Only applies when this trigger also sets its own image scaling mode."
@@ -188,46 +264,63 @@
             "value_direction": "Which way the value must move to capture. With increase or decrease, movement the other way re-baselines silently (a layer counter resetting for a new print just starts counting again)."
           }
         },
-        "conditional_rule": {
-          "title": "Cadence rule {rule_number}",
-          "description": "Rules are checked top to bottom; the first one whose conditions hold paces the frames. Fill in only the settings for the chosen cadence.",
+        "conditional_rules": {
+          "title": "Conditional cadence",
+          "description": "Rules are checked top to bottom; the first whose conditions all hold paces the frames for the whole session. The default is used when no rule matches.\n\n{rules_summary}",
+          "menu_options": {
+            "rule_add": "Add a rule",
+            "rule_edit": "Edit a rule",
+            "rule_delete": "Delete a rule",
+            "rule_default": "Set the default cadence",
+            "cadence_done": "Done"
+          }
+        },
+        "rule_edit": {
+          "title": "Edit which rule",
+          "data": {
+            "rule_index": "Rule"
+          }
+        },
+        "rule_delete": {
+          "title": "Delete which rule",
+          "data": {
+            "rule_index": "Rule"
+          }
+        },
+        "rule_conditions": {
+          "title": "Conditions and cadence",
+          "description": "Editing {rule_label}. Choose the conditions that select this rule and which cadence paces frames while they hold. The cadence's own settings come next.",
           "data": {
             "conditions": "Conditions",
-            "capture_mode": "Cadence while these conditions hold",
-            "interval": "Capture interval (time interval cadence)",
-            "value_entity": "Value entity (value change cadence)",
-            "value_delta": "Capture every (value change cadence)",
-            "value_direction": "Direction (value change cadence)",
-            "add_another": "Add another rule"
+            "capture_mode": "Cadence while these conditions hold"
           },
           "data_description": {
             "conditions": "Home Assistant conditions that must all hold for this rule to apply, for example a numeric state condition on a layer count sensor.",
-            "capture_mode": "Time interval: a snapshot every N seconds. Entity value change: a snapshot each time a numeric entity moves by a chosen step.",
-            "interval": "Seconds between snapshots while this rule applies.",
-            "value_entity": "Numeric entity that paces the frames while this rule applies.",
-            "value_delta": "A frame is captured each time the value moves by at least this amount since the last frame. Use 1 for one frame per layer.",
-            "value_direction": "Which way the value must move to capture.",
-            "add_another": "Add one more rule after this one. The default cadence for when no rule matches is configured last either way."
+            "capture_mode": "Time interval: a snapshot every N seconds. Fit target video length: auto-compute the interval from a duration entity. Entity value change: a snapshot each time a numeric entity moves by a chosen step."
           }
         },
-        "conditional_default": {
-          "title": "Default cadence",
-          "description": "Used whenever no rule's conditions hold. Fill in only the settings for the chosen cadence.",
+        "rule_cadence": {
+          "title": "Cadence settings",
+          "description": "Cadence settings for {rule_label}.",
           "data": {
-            "capture_mode": "Default cadence",
-            "interval": "Capture interval (time interval cadence)",
-            "value_entity": "Value entity (value change cadence)",
-            "value_delta": "Capture every (value change cadence)",
-            "value_direction": "Direction (value change cadence)",
-            "conditional_reevaluate": "Re-evaluate rules during a session"
+            "interval": "Capture interval",
+            "duration_entity": "Duration entity",
+            "duration_type": "Duration entity reports",
+            "target_length": "Target video length",
+            "fallback_interval": "Fallback interval",
+            "value_entity": "Value entity",
+            "value_delta": "Capture every",
+            "value_direction": "Direction"
           },
           "data_description": {
-            "capture_mode": "Time interval: a snapshot every N seconds. Entity value change: a snapshot each time a numeric entity moves by a chosen step.",
-            "interval": "Seconds between snapshots while no rule applies.",
-            "value_entity": "Numeric entity that paces the frames while no rule applies.",
+            "interval": "Seconds between snapshots while this rule applies.",
+            "duration_entity": "Entity that reports the expected total duration of the session while this rule applies, for example a 3D printer's estimated print time sensor.",
+            "duration_type": "How to read the duration entity: as a number of seconds, minutes, or hours, or as an end-time timestamp.",
+            "target_length": "Desired length of the finished video. The capture interval is computed once when the session starts.",
+            "fallback_interval": "Seconds between snapshots when the duration entity cannot be read as a positive number at session start.",
+            "value_entity": "Numeric entity that paces the frames while this rule applies.",
             "value_delta": "A frame is captured each time the value moves by at least this amount since the last frame. Use 1 for one frame per layer.",
-            "value_direction": "Which way the value must move to capture.",
-            "conditional_reevaluate": "On: the rules are re-checked while capturing and the cadence switches as soon as another rule matches. Off: the rule matching at session start is locked in for the whole session."
+            "value_direction": "Which way the value must move to capture."
           }
         },
         "custom_video": {
@@ -239,6 +332,20 @@
           "data_description": {
             "video_crf": "x264 constant rate factor: lower is higher quality and a bigger file. 0 is lossless, 23 is the default, 51 is worst.",
             "video_preset": "Encoding speed versus compression efficiency. Slower presets produce smaller files at the same quality but render longer."
+          }
+        },
+        "yaml_export": {
+          "title": "Trigger as YAML",
+          "description": "This trigger's configuration as YAML. Copy it to back up, share, or edit and paste back via 'Edit as YAML'.\n\n{yaml}",
+          "data": {
+            "yaml": "YAML"
+          }
+        },
+        "yaml_edit": {
+          "title": "Edit as YAML",
+          "description": "Paste a YAML trigger definition (as produced by 'View as YAML'). It is validated and then saved, replacing this trigger's settings.",
+          "data": {
+            "yaml": "YAML"
           }
         }
       },
@@ -252,7 +359,9 @@
         "buffer_interval_required": "A buffer capture interval is required when the session can be paced by entity value changes.",
         "conditions_required": "Add at least one condition, or finish with the default cadence instead.",
         "value_entity_required": "Pick the entity that paces the frames for the value change cadence.",
-        "max_width_required": "Enter a maximum width to enable image scaling."
+        "max_width_required": "Enter a maximum width to enable image scaling.",
+        "invalid_yaml": "Could not import this YAML: {error}",
+        "invalid_condition": "A conditional rule has invalid conditions: {error}"
       },
       "abort": {
         "reconfigure_successful": "Trigger updated."
@@ -280,12 +389,13 @@
         "time": "Time interval",
         "time_fit": "Fit target video length",
         "value_change": "Entity value change",
-        "conditional": "Conditional (rule based)"
+        "conditional": "Conditional at start"
       }
     },
     "rule_capture_mode": {
       "options": {
         "time": "Time interval",
+        "time_fit": "Fit target video length",
         "value_change": "Entity value change"
       }
     },
@@ -354,6 +464,12 @@
         "slow": "Slow",
         "slower": "Slower",
         "veryslow": "Very slow"
+      }
+    },
+    "purge_mode": {
+      "options": {
+        "keep_recent": "Keep the N most recent sessions",
+        "max_age": "Delete frames older than N days"
       }
     }
   },
@@ -425,6 +541,16 @@
         "device_id": {
           "name": "Trigger",
           "description": "The timelapse trigger to cancel."
+        }
+      }
+    },
+    "purge_frames": {
+      "name": "Purge frames",
+      "description": "Deletes all retained frame sets for a trigger. Videos are kept.",
+      "fields": {
+        "device_id": {
+          "name": "Trigger",
+          "description": "The timelapse trigger whose frames should be purged."
         }
       }
     }

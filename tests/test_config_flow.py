@@ -2,16 +2,17 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from homeassistant import config_entries
+from homeassistant.config_entries import ConfigSubentryData
 from homeassistant.const import CONF_NAME
 from homeassistant.data_entry_flow import FlowResultType
+from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.auto_time_lapse.const import (
     CONF_CAMERA_ENTITY,
     CONF_CAPTURE_MODE,
-    CONF_CONDITIONAL_REEVALUATE,
     CONF_CONDITIONAL_RULES,
     CONF_DURATION_ENTITY,
     CONF_DURATION_TYPE,
@@ -26,7 +27,6 @@ from custom_components.auto_time_lapse.const import (
     CONF_MAX_WIDTH,
     CONF_OUTPUT_DIR,
     CONF_OUTPUT_FPS,
-    CONF_RULE_ADD_ANOTHER,
     CONF_RULE_CONDITIONS,
     CONF_SCALE_MODE,
     CONF_SCHEDULE_END,
@@ -53,6 +53,12 @@ from custom_components.auto_time_lapse.const import (
     ValueDirection,
     VideoQuality,
 )
+from custom_components.auto_time_lapse.schema import (
+    entry_to_yaml,
+    parse_entry_yaml,
+    parse_trigger_yaml,
+    trigger_to_yaml,
+)
 
 from .conftest import make_entry
 
@@ -71,6 +77,60 @@ TRIGGER_INPUT = {
     CONF_FILENAME_PATTERN: "{name}_{timestamp}.mp4",
     CONF_KEEP_FRAMES: False,
 }
+
+# The reconfigure hub's "Basics" step is a subset of the main form.
+BASICS_INPUT = {
+    CONF_NAME: "Garden",
+    CONF_TRIGGER_MODE: TriggerMode.MANUAL.value,
+    CONF_CAPTURE_MODE: CaptureMode.TIME.value,
+    CONF_OUTPUT_FPS: 24,
+    CONF_FILENAME_PATTERN: "{name}_{timestamp}.mp4",
+}
+
+
+async def _open_reconfigure(hass, entry, subentry_id):
+    """Start a reconfigure flow; it lands on the editing hub menu."""
+    return await hass.config_entries.subentries.async_init(
+        (entry.entry_id, SUBENTRY_TYPE_TRIGGER),
+        context={
+            "source": config_entries.SOURCE_RECONFIGURE,
+            "subentry_id": subentry_id,
+        },
+    )
+
+
+async def _menu(hass, result, option):
+    """Pick a menu option from a hub/overview menu step."""
+    return await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {"next_step_id": option}
+    )
+
+
+async def _add_conditional_rule(hass, result, conditions, mode, cadence):
+    """Drive the two-hop rule editor from the conditional overview."""
+    result = await _menu(hass, result, "rule_add")
+    assert result["step_id"] == "rule_conditions"
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        {CONF_RULE_CONDITIONS: conditions, CONF_CAPTURE_MODE: mode},
+    )
+    assert result["step_id"] == "rule_cadence"
+    return await hass.config_entries.subentries.async_configure(
+        result["flow_id"], cadence
+    )
+
+
+async def _set_conditional_default(hass, result, mode, cadence):
+    """Set the default (else) cadence from the conditional overview."""
+    result = await _menu(hass, result, "rule_default")
+    assert result["step_id"] == "rule_conditions"
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {CONF_CAPTURE_MODE: mode}
+    )
+    assert result["step_id"] == "rule_cadence"
+    return await hass.config_entries.subentries.async_configure(
+        result["flow_id"], cadence
+    )
 
 
 async def test_user_flow_creates_camera_entry(hass):
@@ -117,9 +177,32 @@ async def _setup_loaded_entry(hass, mock_entry):
 
 
 async def _start_trigger_flow(hass, mock_entry):
-    return await hass.config_entries.subentries.async_init(
+    """Start adding a trigger and step into the guided wizard."""
+    result = await hass.config_entries.subentries.async_init(
         (mock_entry.entry_id, SUBENTRY_TYPE_TRIGGER),
         context={"source": config_entries.SOURCE_USER},
+    )
+    assert result["type"] is FlowResultType.MENU
+    assert result["step_id"] == "user"
+    return await _menu(hass, result, "guided")
+
+
+async def _start_yaml_trigger_flow(hass, mock_entry):
+    """Start adding a trigger and choose the paste-YAML path."""
+    result = await hass.config_entries.subentries.async_init(
+        (mock_entry.entry_id, SUBENTRY_TYPE_TRIGGER),
+        context={"source": config_entries.SOURCE_USER},
+    )
+    return await _menu(hass, result, "yaml_edit")
+
+
+async def _open_quality_options(hass, mock_entry):
+    """Open the camera options and step into the quality form."""
+    result = await hass.config_entries.options.async_init(mock_entry.entry_id)
+    assert result["type"] is FlowResultType.MENU
+    assert result["step_id"] == "init"
+    return await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "quality"}
     )
 
 
@@ -147,7 +230,7 @@ async def test_trigger_subentry_manual(hass, mock_entry):
     await _setup_loaded_entry(hass, mock_entry)
     result = await _start_trigger_flow(hass, mock_entry)
     assert result["type"] is FlowResultType.FORM
-    assert result["step_id"] == "user"
+    assert result["step_id"] == "guided"
 
     result = await hass.config_entries.subentries.async_configure(
         result["flow_id"], dict(TRIGGER_INPUT)
@@ -348,35 +431,35 @@ async def test_trigger_subentry_fit_length(hass, mock_entry):
 
 
 async def test_trigger_subentry_reconfigure(hass, mock_entry):
-    """Reconfiguring a trigger updates its data and strips stale mode keys."""
+    """Reconfiguring via the hub: edit basics, switch mode, then save."""
     await _setup_loaded_entry(hass, mock_entry)
     subentry_id = next(iter(mock_entry.subentries))
 
-    result = await hass.config_entries.subentries.async_init(
-        (mock_entry.entry_id, SUBENTRY_TYPE_TRIGGER),
-        context={
-            "source": config_entries.SOURCE_RECONFIGURE,
-            "subentry_id": subentry_id,
-        },
-    )
-    assert result["type"] is FlowResultType.FORM
-    assert result["step_id"] == "reconfigure"
+    result = await _open_reconfigure(hass, mock_entry, subentry_id)
+    assert result["type"] is FlowResultType.MENU
+    assert result["step_id"] == "hub"
 
+    # Edit the basics; switching to schedule routes straight into its setup.
+    result = await _menu(hass, result, "basics")
+    assert result["step_id"] == "basics"
     result = await hass.config_entries.subentries.async_configure(
         result["flow_id"],
-        dict(TRIGGER_INPUT)
+        dict(BASICS_INPUT)
         | {
             CONF_NAME: "Renamed",
             CONF_TRIGGER_MODE: TriggerMode.SCHEDULE.value,
         },
     )
-    result = await _pass_interval_step(hass, result)
     assert result["step_id"] == "schedule"
     result = await hass.config_entries.subentries.async_configure(
         result["flow_id"],
         {CONF_SCHEDULE_START: "06:00:00", CONF_SCHEDULE_END: "20:00:00"},
     )
-    result = await _pass_end_buffer_step(hass, result)
+    # Editing returns to the hub rather than walking the rest of the wizard.
+    assert result["type"] is FlowResultType.MENU
+    assert result["step_id"] == "hub"
+
+    result = await _menu(hass, result, "save")
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "reconfigure_successful"
 
@@ -384,6 +467,32 @@ async def test_trigger_subentry_reconfigure(hass, mock_entry):
     assert subentry.title == "Renamed"
     assert subentry.data[CONF_TRIGGER_MODE] == TriggerMode.SCHEDULE.value
     assert subentry.data[CONF_SCHEDULE_START] == "06:00:00"
+    # Untouched cadence config is preserved.
+    assert subentry.data[CONF_INTERVAL] == 60
+
+
+async def test_reconfigure_hub_edits_only_basics(hass, mock_entry):
+    """Editing one section leaves every other stored key untouched."""
+    await _setup_loaded_entry(hass, mock_entry)
+    subentry_id = next(iter(mock_entry.subentries))
+    before = dict(mock_entry.subentries[subentry_id].data)
+
+    result = await _open_reconfigure(hass, mock_entry, subentry_id)
+    result = await _menu(hass, result, "basics")
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], dict(BASICS_INPUT) | {CONF_NAME: "Renamed"}
+    )
+    assert result["type"] is FlowResultType.MENU
+    result = await _menu(hass, result, "save")
+    assert result["type"] is FlowResultType.ABORT
+
+    subentry = mock_entry.subentries[subentry_id]
+    assert subentry.title == "Renamed"
+    # Output fps changed via basics; everything else is identical.
+    assert subentry.data[CONF_OUTPUT_FPS] == 24
+    assert {k: v for k, v in subentry.data.items() if k != CONF_OUTPUT_FPS} == {
+        k: v for k, v in before.items() if k != CONF_OUTPUT_FPS
+    }
 
 
 async def test_trigger_subentry_manual_skips_buffer_step(hass, mock_entry):
@@ -510,49 +619,35 @@ async def test_trigger_subentry_conditional(hass, mock_entry):
         result["flow_id"],
         dict(TRIGGER_INPUT) | {CONF_CAPTURE_MODE: CaptureMode.CONDITIONAL.value},
     )
-    assert result["type"] is FlowResultType.FORM
-    assert result["step_id"] == "conditional_rule"
+    assert result["type"] is FlowResultType.MENU
+    assert result["step_id"] == "conditional_rules"
 
-    result = await hass.config_entries.subentries.async_configure(
-        result["flow_id"],
-        {
-            CONF_RULE_CONDITIONS: LAYER_BELOW_20,
-            CONF_CAPTURE_MODE: CaptureMode.TIME.value,
-            CONF_INTERVAL: 30,
-            CONF_RULE_ADD_ANOTHER: True,
-        },
+    result = await _add_conditional_rule(
+        hass, result, LAYER_BELOW_20, CaptureMode.TIME.value, {CONF_INTERVAL: 30}
     )
-    assert result["type"] is FlowResultType.FORM
-    assert result["step_id"] == "conditional_rule"
-
-    result = await hass.config_entries.subentries.async_configure(
-        result["flow_id"],
-        {
-            CONF_RULE_CONDITIONS: LAYER_BELOW_40,
-            CONF_CAPTURE_MODE: CaptureMode.TIME.value,
-            CONF_INTERVAL: 60,
-            CONF_RULE_ADD_ANOTHER: False,
-        },
+    assert result["type"] is FlowResultType.MENU
+    result = await _add_conditional_rule(
+        hass, result, LAYER_BELOW_40, CaptureMode.TIME.value, {CONF_INTERVAL: 60}
     )
-    assert result["type"] is FlowResultType.FORM
-    assert result["step_id"] == "conditional_default"
-
-    result = await hass.config_entries.subentries.async_configure(
-        result["flow_id"],
+    assert result["type"] is FlowResultType.MENU
+    result = await _set_conditional_default(
+        hass,
+        result,
+        CaptureMode.VALUE_CHANGE.value,
         {
-            CONF_CAPTURE_MODE: CaptureMode.VALUE_CHANGE.value,
             CONF_VALUE_ENTITY: "sensor.current_layer",
             CONF_VALUE_DELTA: 1,
             CONF_VALUE_DIRECTION: ValueDirection.INCREASE.value,
-            CONF_CONDITIONAL_REEVALUATE: True,
         },
     )
+    assert result["type"] is FlowResultType.MENU
+
+    result = await _menu(hass, result, "cadence_done")
     assert result["type"] is FlowResultType.CREATE_ENTRY
     subentry = next(
         s for s in mock_entry.subentries.values() if s.title == "Garden"
     )
     assert subentry.data[CONF_CAPTURE_MODE] == CaptureMode.CONDITIONAL.value
-    assert subentry.data[CONF_CONDITIONAL_REEVALUATE] is True
     rules = subentry.data[CONF_CONDITIONAL_RULES]
     assert len(rules) == 3
     # The selector normalizes condition configs (entity_id becomes a list).
@@ -575,54 +670,182 @@ async def test_trigger_subentry_conditional(hass, mock_entry):
 
 
 async def test_conditional_rule_validation(hass, mock_entry):
-    """Rules need conditions, and value-change rules need entity and step."""
+    """Empty conditions and a non-positive step are rejected in each hop."""
     await _setup_loaded_entry(hass, mock_entry)
     result = await _start_trigger_flow(hass, mock_entry)
     result = await hass.config_entries.subentries.async_configure(
         result["flow_id"],
         dict(TRIGGER_INPUT) | {CONF_CAPTURE_MODE: CaptureMode.CONDITIONAL.value},
     )
+    result = await _menu(hass, result, "rule_add")
+    assert result["step_id"] == "rule_conditions"
 
+    # First hop: conditions are required.
     result = await hass.config_entries.subentries.async_configure(
         result["flow_id"],
-        {
-            CONF_RULE_CONDITIONS: [],
-            CONF_CAPTURE_MODE: CaptureMode.VALUE_CHANGE.value,
-            CONF_VALUE_DELTA: 0,
-            CONF_RULE_ADD_ANOTHER: False,
-        },
+        {CONF_RULE_CONDITIONS: [], CONF_CAPTURE_MODE: CaptureMode.VALUE_CHANGE.value},
     )
     assert result["type"] is FlowResultType.FORM
-    assert result["errors"] == {
-        CONF_RULE_CONDITIONS: "conditions_required",
-        CONF_VALUE_ENTITY: "value_entity_required",
-        CONF_VALUE_DELTA: "delta_positive",
-    }
+    assert result["step_id"] == "rule_conditions"
+    assert result["errors"] == {CONF_RULE_CONDITIONS: "conditions_required"}
 
     result = await hass.config_entries.subentries.async_configure(
         result["flow_id"],
         {
             CONF_RULE_CONDITIONS: LAYER_BELOW_20,
-            CONF_CAPTURE_MODE: CaptureMode.TIME.value,
-            CONF_INTERVAL: 30,
-            CONF_RULE_ADD_ANOTHER: False,
+            CONF_CAPTURE_MODE: CaptureMode.VALUE_CHANGE.value,
         },
     )
-    assert result["step_id"] == "conditional_default"
+    assert result["step_id"] == "rule_cadence"
+
+    # Second hop: the value step must be positive.
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        {
+            CONF_VALUE_ENTITY: "sensor.current_layer",
+            CONF_VALUE_DELTA: 0,
+            CONF_VALUE_DIRECTION: ValueDirection.ANY.value,
+        },
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "rule_cadence"
+    assert result["errors"] == {CONF_VALUE_DELTA: "delta_positive"}
+
+
+async def test_conditional_rule_time_fit(hass, mock_entry):
+    """A conditional rule may use the fit-target-length cadence."""
+    await _setup_loaded_entry(hass, mock_entry)
+    result = await _start_trigger_flow(hass, mock_entry)
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        dict(TRIGGER_INPUT) | {CONF_CAPTURE_MODE: CaptureMode.CONDITIONAL.value},
+    )
+    assert result["step_id"] == "conditional_rules"
+
+    result = await _menu(hass, result, "rule_add")
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        {
+            CONF_RULE_CONDITIONS: LAYER_BELOW_20,
+            CONF_CAPTURE_MODE: CaptureMode.TIME_FIT.value,
+        },
+    )
+    assert result["step_id"] == "rule_cadence"
+
+    # A non-positive target length is rejected.
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        {
+            CONF_DURATION_ENTITY: "sensor.print_time",
+            CONF_DURATION_TYPE: DurationType.SECONDS.value,
+            CONF_TARGET_LENGTH: 0,
+            CONF_FALLBACK_INTERVAL: 60,
+        },
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {CONF_TARGET_LENGTH: "length_positive"}
 
     result = await hass.config_entries.subentries.async_configure(
         result["flow_id"],
         {
-            CONF_CAPTURE_MODE: CaptureMode.VALUE_CHANGE.value,
-            CONF_VALUE_DELTA: 0,
-            CONF_CONDITIONAL_REEVALUATE: True,
+            CONF_DURATION_ENTITY: "sensor.print_time",
+            CONF_DURATION_TYPE: DurationType.SECONDS.value,
+            CONF_TARGET_LENGTH: 30.0,
+            CONF_FALLBACK_INTERVAL: 60,
         },
     )
-    assert result["type"] is FlowResultType.FORM
-    assert result["errors"] == {
-        CONF_VALUE_ENTITY: "value_entity_required",
-        CONF_VALUE_DELTA: "delta_positive",
-    }
+    assert result["type"] is FlowResultType.MENU
+
+    result = await _set_conditional_default(
+        hass, result, CaptureMode.TIME.value, {CONF_INTERVAL: 120}
+    )
+    result = await _menu(hass, result, "cadence_done")
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+
+    subentry = next(s for s in mock_entry.subentries.values() if s.title == "Garden")
+    rules = subentry.data[CONF_CONDITIONAL_RULES]
+    assert rules[0][CONF_CAPTURE_MODE] == CaptureMode.TIME_FIT.value
+    assert rules[0][CONF_DURATION_ENTITY] == "sensor.print_time"
+    assert rules[0][CONF_TARGET_LENGTH] == 30.0
+    assert rules[0][CONF_FALLBACK_INTERVAL] == 60
+    assert CONF_INTERVAL not in rules[0]
+    assert rules[1][CONF_INTERVAL] == 120
+    assert CONF_RULE_CONDITIONS not in rules[1]
+
+
+async def test_reconfigure_edit_and_delete_conditional_rule(hass):
+    """The overview can edit one rule and delete another, preserving order."""
+    entry = make_entry(
+        {
+            CONF_TRIGGER_MODE: TriggerMode.MANUAL.value,
+            CONF_CAPTURE_MODE: CaptureMode.CONDITIONAL.value,
+            CONF_CONDITIONAL_RULES: [
+                {
+                    CONF_RULE_CONDITIONS: LAYER_BELOW_20,
+                    CONF_CAPTURE_MODE: CaptureMode.TIME.value,
+                    CONF_INTERVAL: 30,
+                },
+                {
+                    CONF_RULE_CONDITIONS: LAYER_BELOW_40,
+                    CONF_CAPTURE_MODE: CaptureMode.TIME.value,
+                    CONF_INTERVAL: 60,
+                },
+                {
+                    CONF_CAPTURE_MODE: CaptureMode.TIME.value,
+                    CONF_INTERVAL: 90,
+                },
+            ],
+            CONF_OUTPUT_FPS: 30,
+            CONF_FILENAME_PATTERN: "{name}_{timestamp}.mp4",
+            CONF_KEEP_FRAMES: False,
+        },
+        title="Conditional",
+    )
+    await _setup_loaded_entry(hass, entry)
+    subentry_id = next(iter(entry.subentries))
+
+    result = await _open_reconfigure(hass, entry, subentry_id)
+    result = await _menu(hass, result, "cadence")
+    assert result["step_id"] == "conditional_rules"
+
+    # Edit the first rule's interval.
+    result = await _menu(hass, result, "rule_edit")
+    assert result["step_id"] == "rule_edit"
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {"rule_index": "0"}
+    )
+    assert result["step_id"] == "rule_conditions"
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        {
+            CONF_RULE_CONDITIONS: LAYER_BELOW_20,
+            CONF_CAPTURE_MODE: CaptureMode.TIME.value,
+        },
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {CONF_INTERVAL: 45}
+    )
+    assert result["type"] is FlowResultType.MENU
+
+    # Delete the second rule.
+    result = await _menu(hass, result, "rule_delete")
+    assert result["step_id"] == "rule_delete"
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {"rule_index": "1"}
+    )
+    assert result["type"] is FlowResultType.MENU
+
+    result = await _menu(hass, result, "cadence_done")
+    assert result["type"] is FlowResultType.MENU
+    assert result["step_id"] == "hub"
+    result = await _menu(hass, result, "save")
+    assert result["type"] is FlowResultType.ABORT
+
+    rules = entry.subentries[subentry_id].data[CONF_CONDITIONAL_RULES]
+    assert len(rules) == 2
+    assert rules[0][CONF_INTERVAL] == 45
+    assert rules[1][CONF_INTERVAL] == 90
+    assert CONF_RULE_CONDITIONS not in rules[1]
 
 
 async def test_buffer_requires_interval_for_conditional_value_rule(
@@ -639,25 +862,20 @@ async def test_buffer_requires_interval_for_conditional_value_rule(
             CONF_CAPTURE_MODE: CaptureMode.CONDITIONAL.value,
         },
     )
-    result = await hass.config_entries.subentries.async_configure(
-        result["flow_id"],
-        {
-            CONF_RULE_CONDITIONS: LAYER_BELOW_20,
-            CONF_CAPTURE_MODE: CaptureMode.TIME.value,
-            CONF_INTERVAL: 30,
-            CONF_RULE_ADD_ANOTHER: False,
-        },
+    result = await _add_conditional_rule(
+        hass, result, LAYER_BELOW_20, CaptureMode.TIME.value, {CONF_INTERVAL: 30}
     )
-    result = await hass.config_entries.subentries.async_configure(
-        result["flow_id"],
+    result = await _set_conditional_default(
+        hass,
+        result,
+        CaptureMode.VALUE_CHANGE.value,
         {
-            CONF_CAPTURE_MODE: CaptureMode.VALUE_CHANGE.value,
             CONF_VALUE_ENTITY: "sensor.current_layer",
             CONF_VALUE_DELTA: 1,
             CONF_VALUE_DIRECTION: ValueDirection.ANY.value,
-            CONF_CONDITIONAL_REEVALUATE: True,
         },
     )
+    result = await _menu(hass, result, "cadence_done")
     result = await hass.config_entries.subentries.async_configure(
         result["flow_id"], {CONF_WATCH_ENTITY: "sensor.printer_status"}
     )
@@ -701,7 +919,6 @@ async def test_reconfigure_conditional_to_time_strips_rules(hass):
                     CONF_INTERVAL: 60,
                 },
             ],
-            CONF_CONDITIONAL_REEVALUATE: True,
             CONF_OUTPUT_FPS: 30,
             CONF_FILENAME_PATTERN: "{name}_{timestamp}.mp4",
             CONF_KEEP_FRAMES: False,
@@ -711,18 +928,19 @@ async def test_reconfigure_conditional_to_time_strips_rules(hass):
     await _setup_loaded_entry(hass, entry)
     subentry_id = next(iter(entry.subentries))
 
-    result = await hass.config_entries.subentries.async_init(
-        (entry.entry_id, SUBENTRY_TYPE_TRIGGER),
-        context={
-            "source": config_entries.SOURCE_RECONFIGURE,
-            "subentry_id": subentry_id,
-        },
-    )
+    result = await _open_reconfigure(hass, entry, subentry_id)
+    result = await _menu(hass, result, "basics")
+    # Switching the cadence to time routes straight into the interval step.
     result = await hass.config_entries.subentries.async_configure(
         result["flow_id"],
-        dict(TRIGGER_INPUT) | {CONF_NAME: "Conditional"},
+        dict(BASICS_INPUT) | {CONF_NAME: "Conditional"},
     )
-    result = await _pass_interval_step(hass, result)
+    assert result["step_id"] == "interval"
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {CONF_INTERVAL: 30}
+    )
+    assert result["type"] is FlowResultType.MENU
+    result = await _menu(hass, result, "save")
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "reconfigure_successful"
 
@@ -730,7 +948,6 @@ async def test_reconfigure_conditional_to_time_strips_rules(hass):
     assert subentry.data[CONF_CAPTURE_MODE] == CaptureMode.TIME.value
     assert subentry.data[CONF_INTERVAL] == 30
     assert CONF_CONDITIONAL_RULES not in subentry.data
-    assert CONF_CONDITIONAL_REEVALUATE not in subentry.data
 
 
 QUALITY_KEYS = (
@@ -745,9 +962,9 @@ QUALITY_KEYS = (
 async def test_options_flow_preset_quality(hass, mock_entry):
     """A preset quality level saves without raw encoder keys."""
     await _setup_loaded_entry(hass, mock_entry)
-    result = await hass.config_entries.options.async_init(mock_entry.entry_id)
+    result = await _open_quality_options(hass, mock_entry)
     assert result["type"] is FlowResultType.FORM
-    assert result["step_id"] == "init"
+    assert result["step_id"] == "quality"
 
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
@@ -768,7 +985,7 @@ async def test_options_flow_preset_quality(hass, mock_entry):
 async def test_options_flow_custom_quality(hass, mock_entry):
     """The custom quality level adds a step for raw CRF and preset."""
     await _setup_loaded_entry(hass, mock_entry)
-    result = await hass.config_entries.options.async_init(mock_entry.entry_id)
+    result = await _open_quality_options(hass, mock_entry)
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
         {
@@ -795,7 +1012,7 @@ async def test_options_flow_custom_quality(hass, mock_entry):
 async def test_options_flow_requires_max_width(hass, mock_entry):
     """An enabled scale mode without a width re-shows the form."""
     await _setup_loaded_entry(hass, mock_entry)
-    result = await hass.config_entries.options.async_init(mock_entry.entry_id)
+    result = await _open_quality_options(hass, mock_entry)
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
         {
@@ -810,7 +1027,7 @@ async def test_options_flow_requires_max_width(hass, mock_entry):
 async def test_options_flow_prunes_width_when_off(hass, mock_entry):
     """A width entered with scaling off is not stored."""
     await _setup_loaded_entry(hass, mock_entry)
-    result = await hass.config_entries.options.async_init(mock_entry.entry_id)
+    result = await _open_quality_options(hass, mock_entry)
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
         {
@@ -920,21 +1137,280 @@ async def test_reconfigure_to_manual_strips_buffer_keys(hass):
     await _setup_loaded_entry(hass, entry)
     subentry_id = next(iter(entry.subentries))
 
-    result = await hass.config_entries.subentries.async_init(
-        (entry.entry_id, SUBENTRY_TYPE_TRIGGER),
-        context={
-            "source": config_entries.SOURCE_RECONFIGURE,
-            "subentry_id": subentry_id,
-        },
-    )
+    result = await _open_reconfigure(hass, entry, subentry_id)
+    result = await _menu(hass, result, "basics")
+    # Switching to manual clears the schedule and buffer config, back to the hub.
     result = await hass.config_entries.subentries.async_configure(
-        result["flow_id"],
-        dict(TRIGGER_INPUT) | {CONF_NAME: "Buffered"},
+        result["flow_id"], dict(BASICS_INPUT) | {CONF_NAME: "Buffered"}
     )
-    result = await _pass_interval_step(hass, result)
+    assert result["type"] is FlowResultType.MENU
+    assert result["step_id"] == "hub"
+    result = await _menu(hass, result, "save")
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "reconfigure_successful"
 
     subentry = entry.subentries[subentry_id]
     assert subentry.data[CONF_TRIGGER_MODE] == TriggerMode.MANUAL.value
     assert not any(key in subentry.data for key in BUFFER_KEYS)
+
+
+# --- YAML import/export (configuration as code) ----------------------------
+
+WATCH_TRIGGER_DATA = {
+    CONF_TRIGGER_MODE: TriggerMode.WATCH.value,
+    CONF_WATCH_ENTITY: "sensor.printer_status",
+    CONF_WATCH_STATES: ["printing", "paused"],
+    CONF_CAPTURE_MODE: CaptureMode.TIME.value,
+    CONF_INTERVAL: 30,
+    CONF_OUTPUT_FPS: 30,
+    CONF_FILENAME_PATTERN: "{name}_{timestamp}.mp4",
+    CONF_KEEP_FRAMES: False,
+}
+
+
+def _manual_data(interval: int) -> dict:
+    """Minimal valid manual time-interval trigger data."""
+    return {
+        CONF_TRIGGER_MODE: TriggerMode.MANUAL.value,
+        CONF_CAPTURE_MODE: CaptureMode.TIME.value,
+        CONF_INTERVAL: interval,
+        CONF_OUTPUT_FPS: 30,
+        CONF_FILENAME_PATTERN: "{name}_{timestamp}.mp4",
+        CONF_KEEP_FRAMES: False,
+    }
+
+
+def _make_multi_entry(triggers, options=None) -> MockConfigEntry:
+    """A camera entry with several trigger subentries (id, title, data)."""
+    return MockConfigEntry(
+        domain=DOMAIN,
+        title="Demo Camera",
+        data={CONF_CAMERA_ENTITY: "camera.demo"},
+        options=options or {},
+        entry_id="multi_entry_id",
+        version=2,
+        subentries_data=[
+            ConfigSubentryData(
+                data=data,
+                subentry_id=sid,
+                subentry_type=SUBENTRY_TYPE_TRIGGER,
+                title=title,
+                unique_id=None,
+            )
+            for sid, title, data in triggers
+        ],
+    )
+
+
+async def test_trigger_yaml_roundtrip_identity(hass):
+    """trigger_to_yaml -> parse_trigger_yaml returns the same name and data."""
+    name, data = await parse_trigger_yaml(
+        hass, trigger_to_yaml("Garden Print", dict(WATCH_TRIGGER_DATA))
+    )
+    assert name == "Garden Print"
+    assert data == WATCH_TRIGGER_DATA
+
+
+async def test_trigger_yaml_export_matches_storage(hass):
+    """Exporting a stored trigger and re-importing reproduces subentry.data."""
+    entry = make_entry(dict(WATCH_TRIGGER_DATA), title="Garden Print")
+    await _setup_loaded_entry(hass, entry)
+    subentry_id = next(iter(entry.subentries))
+
+    result = await _open_reconfigure(hass, entry, subentry_id)
+    result = await _menu(hass, result, "yaml_export")
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "yaml_export"
+
+    yaml_text = result["description_placeholders"]["yaml"]
+    name, data = await parse_trigger_yaml(hass, yaml_text)
+    assert name == "Garden Print"
+    assert data == entry.subentries[subentry_id].data
+
+
+async def test_trigger_yaml_preserves_unknown_key(hass):
+    """Export keeps keys this version doesn't recognize; import round-trips them."""
+    data = dict(WATCH_TRIGGER_DATA) | {"future_setting": "keep-me"}
+    name, parsed = await parse_trigger_yaml(hass, trigger_to_yaml("Garden", data))
+    assert name == "Garden"
+    assert parsed["future_setting"] == "keep-me"
+    assert parsed == data
+
+
+async def test_trigger_yaml_import_creates(hass, mock_entry):
+    """Pasting YAML in the new-trigger flow creates a matching trigger."""
+    await _setup_loaded_entry(hass, mock_entry)
+    result = await _start_yaml_trigger_flow(hass, mock_entry)
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "yaml_edit"
+
+    yaml_text = trigger_to_yaml("Imported", dict(WATCH_TRIGGER_DATA))
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {"yaml": yaml_text}
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    subentry = next(
+        s for s in mock_entry.subentries.values() if s.title == "Imported"
+    )
+    assert subentry.data == WATCH_TRIGGER_DATA
+
+
+async def test_trigger_yaml_edit_replaces(hass, mock_entry):
+    """Editing a trigger as YAML on the hub replaces its stored data."""
+    await _setup_loaded_entry(hass, mock_entry)
+    subentry_id = next(iter(mock_entry.subentries))
+
+    result = await _open_reconfigure(hass, mock_entry, subentry_id)
+    result = await _menu(hass, result, "yaml_edit")
+    assert result["step_id"] == "yaml_edit"
+
+    yaml_text = trigger_to_yaml("Test Lapse", dict(WATCH_TRIGGER_DATA))
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {"yaml": yaml_text}
+    )
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "reconfigure_successful"
+    assert mock_entry.subentries[subentry_id].data == WATCH_TRIGGER_DATA
+
+
+async def test_trigger_yaml_import_invalid(hass, mock_entry):
+    """Invalid YAML re-shows the form with an error and creates nothing."""
+    await _setup_loaded_entry(hass, mock_entry)
+    result = await _start_yaml_trigger_flow(hass, mock_entry)
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        {"yaml": "name: Bad\ntrigger_mode: bogus\ncapture_mode: time"},
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"base": "invalid_yaml"}
+    assert not any(s.title == "Bad" for s in mock_entry.subentries.values())
+
+
+async def test_trigger_yaml_import_invalid_condition(hass, mock_entry):
+    """A conditional rule whose conditions fail validation is rejected."""
+    await _setup_loaded_entry(hass, mock_entry)
+    result = await _start_yaml_trigger_flow(hass, mock_entry)
+    bad = (
+        "name: Bad\n"
+        "trigger_mode: manual\n"
+        "capture_mode: conditional\n"
+        "conditional_rules:\n"
+        "  - conditions:\n"
+        "      - condition: numeric_state\n"
+        "        below: 5\n"
+        "    capture_mode: time\n"
+        "    interval: 30\n"
+        "  - capture_mode: time\n"
+        "    interval: 60\n"
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {"yaml": bad}
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"base": "invalid_condition"}
+    assert not any(s.title == "Bad" for s in mock_entry.subentries.values())
+
+
+async def test_entry_yaml_export(hass):
+    """The whole-entry export contains the options and every trigger."""
+    entry = _make_multi_entry(
+        [("a", "Alpha", _manual_data(60)), ("b", "Beta", _manual_data(90))],
+        options={
+            CONF_VIDEO_QUALITY: VideoQuality.HIGH.value,
+            CONF_SCALE_MODE: ScaleMode.RENDER.value,
+            CONF_MAX_WIDTH: 1920,
+        },
+    )
+    await _setup_loaded_entry(hass, entry)
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "export_yaml"}
+    )
+    assert result["step_id"] == "export_yaml"
+
+    options, triggers = await parse_entry_yaml(
+        hass, result["description_placeholders"]["yaml"]
+    )
+    assert options == dict(entry.options)
+    assert {name for name, _ in triggers} == {"Alpha", "Beta"}
+
+
+async def test_entry_yaml_import_full_sync(hass):
+    """Whole-entry import updates, adds, and deletes triggers by name."""
+    entry = _make_multi_entry(
+        [("a", "Alpha", _manual_data(60)), ("b", "Beta", _manual_data(90))]
+    )
+    await _setup_loaded_entry(hass, entry)
+    doc = entry_to_yaml(
+        {CONF_VIDEO_QUALITY: VideoQuality.HIGH.value},
+        [("Alpha", _manual_data(120)), ("Gamma", _manual_data(15))],
+    )
+    with patch(
+        "homeassistant.config_entries.ConfigEntries.async_reload",
+        AsyncMock(return_value=True),
+    ):
+        result = await hass.config_entries.options.async_init(entry.entry_id)
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"], {"next_step_id": "import_yaml"}
+        )
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"], {"yaml": doc}
+        )
+        assert result["step_id"] == "import_confirm"
+        assert "Beta" in result["description_placeholders"]["deletions"]
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"], {}
+        )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+
+    by_title = {sub.title: sub.data for sub in entry.subentries.values()}
+    assert set(by_title) == {"Alpha", "Gamma"}
+    assert by_title["Alpha"][CONF_INTERVAL] == 120
+    assert by_title["Gamma"][CONF_INTERVAL] == 15
+    assert dict(entry.options) == {CONF_VIDEO_QUALITY: VideoQuality.HIGH.value}
+
+
+async def test_entry_yaml_import_rename_recreates(hass):
+    """Renaming a trigger deletes the old name and recreates it fresh."""
+    entry = _make_multi_entry([("a", "Alpha", _manual_data(60))])
+    await _setup_loaded_entry(hass, entry)
+    old_id = next(iter(entry.subentries))
+    doc = entry_to_yaml({}, [("Alpha Renamed", _manual_data(60))])
+    with patch(
+        "homeassistant.config_entries.ConfigEntries.async_reload",
+        AsyncMock(return_value=True),
+    ):
+        result = await hass.config_entries.options.async_init(entry.entry_id)
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"], {"next_step_id": "import_yaml"}
+        )
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"], {"yaml": doc}
+        )
+        assert "Alpha" in result["description_placeholders"]["deletions"]
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"], {}
+        )
+    titles = {sub.title for sub in entry.subentries.values()}
+    assert titles == {"Alpha Renamed"}
+    assert old_id not in entry.subentries
+
+
+async def test_entry_yaml_import_rejects_duplicate_names(hass):
+    """Two triggers with the same name abort the import with an error."""
+    entry = _make_multi_entry([("a", "Alpha", _manual_data(60))])
+    await _setup_loaded_entry(hass, entry)
+    doc = entry_to_yaml(
+        {}, [("Dup", _manual_data(60)), ("Dup", _manual_data(90))]
+    )
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "import_yaml"}
+    )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"yaml": doc}
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"base": "duplicate_names"}
+    # The existing trigger is untouched.
+    assert {sub.title for sub in entry.subentries.values()} == {"Alpha"}
