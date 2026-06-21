@@ -163,7 +163,7 @@ automation:
 
 ## 📝 Behavior notes
 
-Full details on file locations and cleanup: **[Where Auto Time Lapse saves your files](docs/save-locations.md)**. Quality and scaling settings: **[Video quality and image scaling](docs/video-quality.md)**. Frame retention and the `purge_frames` service: **[Keeping disk usage under control](docs/purge-frames.md)**. Picking a cadence from Home Assistant conditions: **[Conditional at start capture cadence](docs/conditional-cadence.md)**.
+Full details on file locations and cleanup: **[Where Auto Time Lapse saves your files](docs/save-locations.md)**. Quality and scaling settings: **[Video quality and image scaling](docs/video-quality.md)**. Frame retention and the `purge_frames` service: **[Keeping disk usage under control](docs/purge-frames.md)**. Picking a cadence from Home Assistant conditions: **[Conditional at start capture cadence](docs/conditional-cadence.md)**. Viewing, backing up, or bulk-editing triggers as YAML: **[Configuration as code](docs/configuration-as-code.md)**.
 
 - Working frames live under `<config>/auto_time_lapse/<trigger id>/<session>/` — temporary storage only, never cluttering the Media Browser. With *keep frames* on, frames move into a folder next to the finished video, named after it.
 - A failed snapshot (camera offline) is skipped and counted in `failed_frames`; the session keeps going.

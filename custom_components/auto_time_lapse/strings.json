@@ -18,6 +18,15 @@
   "options": {
     "step": {
       "init": {
+        "title": "Camera configuration",
+        "description": "Edit the quality defaults, or view and replace this camera's whole configuration as YAML.",
+        "menu_options": {
+          "quality": "Video and image quality defaults",
+          "export_yaml": "Export this camera as YAML",
+          "import_yaml": "Import this camera from YAML"
+        }
+      },
+      "quality": {
         "title": "Video and image quality",
         "description": "Defaults for every trigger on this camera. Individual triggers can override any of these.",
         "data": {
@@ -41,10 +50,31 @@
           "video_crf": "x264 constant rate factor: lower is higher quality and a bigger file. 0 is lossless, 23 is the default, 51 is worst.",
           "video_preset": "Encoding speed versus compression efficiency. Slower presets produce smaller files at the same quality but render longer."
         }
+      },
+      "export_yaml": {
+        "title": "Export camera as YAML",
+        "description": "The whole camera configuration — its quality defaults and every trigger — as YAML. Copy it to back up, share, or edit and paste back via Import.\n\n{yaml}",
+        "data": {
+          "yaml": "YAML"
+        }
+      },
+      "import_yaml": {
+        "title": "Import camera from YAML",
+        "description": "Paste a whole-camera YAML document (an 'options' mapping and a 'triggers' list, as produced by Export). This fully replaces the camera's triggers: triggers are matched by name, and any existing trigger not in the document is deleted. You confirm the deletions on the next step.\n\nRenaming a trigger deletes the old name and recreates it under the new one. Trigger names must be unique within the document.",
+        "data": {
+          "yaml": "YAML"
+        }
+      },
+      "import_confirm": {
+        "title": "Confirm import",
+        "description": "Applying this import will create or update these triggers:\n{kept}\n\nAnd delete these triggers (not present in the document):\n{deletions}\n\nSubmit to apply, or go back to change the YAML."
       }
     },
     "error": {
-      "max_width_required": "Enter a maximum width to enable image scaling."
+      "max_width_required": "Enter a maximum width to enable image scaling.",
+      "invalid_yaml": "Could not import this YAML: {error}",
+      "invalid_condition": "A conditional rule has invalid conditions: {error}",
+      "duplicate_names": "Trigger names must be unique. Duplicated: {error}"
     }
   },
   "config_subentries": {
@@ -56,6 +86,14 @@
       },
       "step": {
         "user": {
+          "title": "Add trigger",
+          "description": "Build the trigger step by step, or paste a YAML definition.",
+          "menu_options": {
+            "guided": "Guided setup",
+            "yaml_edit": "Paste YAML"
+          }
+        },
+        "guided": {
           "title": "Add trigger",
           "data": {
             "name": "Name",
@@ -99,6 +137,8 @@
             "watch": "Watched entity and states",
             "end_buffer": "End delay buffer",
             "output": "Retention and quality",
+            "yaml_export": "View as YAML",
+            "yaml_edit": "Edit as YAML",
             "save": "Save changes"
           }
         },
@@ -293,6 +333,20 @@
             "video_crf": "x264 constant rate factor: lower is higher quality and a bigger file. 0 is lossless, 23 is the default, 51 is worst.",
             "video_preset": "Encoding speed versus compression efficiency. Slower presets produce smaller files at the same quality but render longer."
           }
+        },
+        "yaml_export": {
+          "title": "Trigger as YAML",
+          "description": "This trigger's configuration as YAML. Copy it to back up, share, or edit and paste back via 'Edit as YAML'.\n\n{yaml}",
+          "data": {
+            "yaml": "YAML"
+          }
+        },
+        "yaml_edit": {
+          "title": "Edit as YAML",
+          "description": "Paste a YAML trigger definition (as produced by 'View as YAML'). It is validated and then saved, replacing this trigger's settings.",
+          "data": {
+            "yaml": "YAML"
+          }
         }
       },
       "error": {
@@ -305,7 +359,9 @@
         "buffer_interval_required": "A buffer capture interval is required when the session can be paced by entity value changes.",
         "conditions_required": "Add at least one condition, or finish with the default cadence instead.",
         "value_entity_required": "Pick the entity that paces the frames for the value change cadence.",
-        "max_width_required": "Enter a maximum width to enable image scaling."
+        "max_width_required": "Enter a maximum width to enable image scaling.",
+        "invalid_yaml": "Could not import this YAML: {error}",
+        "invalid_condition": "A conditional rule has invalid conditions: {error}"
       },
       "abort": {
         "reconfigure_successful": "Trigger updated."

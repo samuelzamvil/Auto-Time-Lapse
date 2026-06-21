@@ -5,6 +5,24 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-06-15
+
+### Added
+
+- **Configuration as code (YAML import/export).** Triggers and camera defaults
+  can now be viewed and edited as YAML, a new front-end onto the same stored
+  configuration:
+  - Per trigger: **View as YAML** and **Edit as YAML** in the trigger editing
+    hub, plus a **Paste YAML** option when adding a new trigger.
+  - Per camera: **Export this camera as YAML** and **Import this camera from
+    YAML** in the camera options, covering the camera's quality defaults and all
+    of its triggers in one document.
+  - Whole-camera import is a full sync that matches triggers by name and confirms
+    exactly which triggers will be created, updated, and deleted before applying.
+  - Pasted YAML — including each conditional rule's conditions — is validated up
+    front, and export → import is a no-op. See
+    [Configuration as code](docs/configuration-as-code.md).
+
 ## [0.5.0] - 2026-06-14
 
 ### Added
