@@ -451,6 +451,25 @@ def _describe_conditions(rule: dict[str, Any]) -> str:
     return " AND ".join(parts) if parts else "(always)"
 
 
+def _conditions_for_editing(
+    conditions: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Collapse single-entity ``entity_id`` lists to strings for the editor.
+
+    HA's ConditionSelector stores ``entity_id`` as a list, but its visual
+    editor only accepts a string. Collapsing single-element lists lets an
+    existing rule reopen in the visual editor instead of YAML-only mode.
+    """
+    editable: list[dict[str, Any]] = []
+    for cond in conditions:
+        entity = cond.get("entity_id") if isinstance(cond, dict) else None
+        if isinstance(entity, list) and len(entity) == 1:
+            editable.append({**cond, "entity_id": entity[0]})
+        else:
+            editable.append(cond)
+    return editable
+
+
 def _describe_cadence(rule: dict[str, Any]) -> str:
     """Summarise the cadence a rule paces frames with."""
     mode = rule.get(CONF_CAPTURE_MODE)
@@ -1205,6 +1224,17 @@ class TriggerSubentryFlow(ConfigSubentryFlow):
                 self._rule_draft[CONF_CAPTURE_MODE] = user_input[CONF_CAPTURE_MODE]
                 return await self.async_step_rule_cadence()
         suggested = user_input if user_input is not None else self._rule_draft
+        if (
+            suggested
+            and not self._rule_is_default
+            and suggested.get(CONF_RULE_CONDITIONS)
+        ):
+            suggested = {
+                **suggested,
+                CONF_RULE_CONDITIONS: _conditions_for_editing(
+                    suggested[CONF_RULE_CONDITIONS]
+                ),
+            }
         return self.async_show_form(
             step_id="rule_conditions",
             data_schema=self.add_suggested_values_to_schema(
