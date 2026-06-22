@@ -10,6 +10,7 @@ from homeassistant.const import CONF_NAME
 from homeassistant.data_entry_flow import FlowResultType
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.auto_time_lapse.config_flow import _conditions_for_editing
 from custom_components.auto_time_lapse.const import (
     CONF_CAMERA_ENTITY,
     CONF_CAPTURE_MODE,
@@ -667,6 +668,58 @@ async def test_trigger_subentry_conditional(hass, mock_entry):
     # No per-rule cadence keys leak to the top level.
     assert CONF_INTERVAL not in subentry.data
     assert CONF_VALUE_ENTITY not in subentry.data
+
+
+def _suggested_value(schema, key):
+    """Pull the suggested value a form schema carries for a field."""
+    for marker in schema.schema:
+        if marker == key:
+            return marker.description["suggested_value"]
+    raise AssertionError(f"no field {key!r} in schema")
+
+
+def test_conditions_for_editing():
+    """Single-entity lists collapse to strings; everything else is untouched."""
+    assert _conditions_for_editing(
+        [{"condition": "numeric_state", "entity_id": ["sensor.a"], "below": 5}]
+    ) == [{"condition": "numeric_state", "entity_id": "sensor.a", "below": 5}]
+    # Multi-entity lists can't use the string editor, so they stay as lists.
+    multi = [{"condition": "state", "entity_id": ["sensor.a", "sensor.b"]}]
+    assert _conditions_for_editing(multi) == multi
+    # Already-string entity_id and conditions without one are passed through.
+    plain = [
+        {"condition": "numeric_state", "entity_id": "sensor.a", "below": 5},
+        {"condition": "template", "value_template": "{{ true }}"},
+    ]
+    assert _conditions_for_editing(plain) == plain
+
+
+async def test_conditional_rule_edit_uses_visual_editor(hass, mock_entry):
+    """Reopening a saved rule offers a string entity_id to the visual editor."""
+    await _setup_loaded_entry(hass, mock_entry)
+    result = await _start_trigger_flow(hass, mock_entry)
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        dict(TRIGGER_INPUT) | {CONF_CAPTURE_MODE: CaptureMode.CONDITIONAL.value},
+    )
+    result = await _add_conditional_rule(
+        hass, result, LAYER_BELOW_20, CaptureMode.TIME.value, {CONF_INTERVAL: 30}
+    )
+    assert result["type"] is FlowResultType.MENU
+
+    # The rule is stored with entity_id as a list (selector normalization).
+    result = await _menu(hass, result, "rule_edit")
+    assert result["step_id"] == "rule_edit"
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {"rule_index": "0"}
+    )
+    assert result["step_id"] == "rule_conditions"
+
+    # The form hands the condition back with entity_id collapsed to a string,
+    # so HA's visual editor renders instead of the YAML-only fallback.
+    (condition,) = _suggested_value(result["data_schema"], CONF_RULE_CONDITIONS)
+    assert condition["entity_id"] == "sensor.current_layer"
+    assert condition["below"] == 20
 
 
 async def test_conditional_rule_validation(hass, mock_entry):
